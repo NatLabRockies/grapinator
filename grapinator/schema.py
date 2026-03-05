@@ -43,61 +43,67 @@ def gql_connection_class_constructor(clazz_name, gql_clazz_name):
 
 class MyConnectionField(SQLAlchemyConnectionField):
     RELAY_ARGS = ['first', 'last', 'before', 'after']
-    
+
     @classmethod
-    def get_query(cls, model, info, **args):
-        matches = None
-        operator = None
-        sort_by = None
-        sort_dir = None
+    def get_query(cls, model, info, sort=None, filter=None, **args):
+        # In graphene 3.x, unset fields are passed as None rather than being
+        # absent from args. Pop our custom args first (treating None as unset).
+        matches  = args.pop('matches', None)
+        operator = args.pop('logic', None)
+        sort_by_name = args.pop('sort_by', None)
+        sort_dir = args.pop('sort_dir', None)
+
+        # Build ORDER BY only when a sort column is actually provided/non-None.
+        sort_clause = None
+        if sort_by_name:
+            sort_col = getattr(model, sort_by_name)
+            sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
+
+        # Let graphene-sqlalchemy 3.x handle its own sort/filter params.
+        query = super(MyConnectionField, cls).get_query(
+            model, info, sort=sort, filter=filter, **args
+        )
+
         filter_conditions = []
-        if 'matches' in args:
-            matches = args['matches']
-            del args['matches']
-        if 'logic' in args:
-            operator = args['logic']
-            del args['logic']
-        if 'sort_by' in args:
-            sort_by = getattr(model, args['sort_by']).name
-            del args['sort_by']
-        if 'sort_dir' in args:
-            sort_dir = args['sort_dir']
-            del args['sort_dir']
-        sort = asc(sort_by) if sort_dir == "asc" else desc(sort_by)
-        query = super(MyConnectionField, cls).get_query(model, info, **args)
-        
         for field, value in args.items():
-            if field not in cls.RELAY_ARGS:
-                if matches == 'exact' or matches == 'eq':
-                    filter_conditions.append(getattr(model, field) == value)
-                elif matches == 'regex' or matches == 're':
-                    filter_conditions.append(getattr(model, field).regexp_match(value))
-                elif matches == 'startswith' or matches == 'sw':
-                    filter_conditions.append(getattr(model, field).ilike(value + '%'))
-                elif matches == 'endswith' or matches == 'ew':
-                    filter_conditions.append(getattr(model, field).ilike('%' + value))
-                elif matches == 'lt':
-                    filter_conditions.append(getattr(model, field) < value)
-                elif matches == 'lte':
-                    filter_conditions.append(getattr(model, field) <= value)
-                elif matches == 'gt':
-                    filter_conditions.append(getattr(model, field) > value)
-                elif matches == 'gte':
-                    filter_conditions.append(getattr(model, field) >= value)
-                elif matches == 'ne':
-                    filter_conditions.append(getattr(model, field) != value)
-                elif isinstance(value, (list)):
-                    filter_conditions.append(getattr(model, field).in_(value))
-                # these last 2 are opinionated defaults for searching date types and strings.
-                elif isinstance(value, (datetime.date, datetime.datetime)):
-                    filter_conditions.append(getattr(model, field) >= value)
-                else: 
-                    filter_conditions.append(getattr(model, field).ilike('%' + value + '%'))
-        
-        if operator == 'or':
-            query = query.filter(or_(*filter_conditions)).order_by(sort)
-        else:
-            query = query.filter(and_(*filter_conditions)).order_by(sort)
+            # Skip relay pagination args and any field not supplied by the client
+            # (graphene 3.x sends None for every declared-but-unset field).
+            if field in cls.RELAY_ARGS or value is None:
+                continue
+            if matches in ('exact', 'eq'):
+                filter_conditions.append(getattr(model, field) == value)
+            elif matches in ('regex', 're'):
+                filter_conditions.append(getattr(model, field).regexp_match(value))
+            elif matches in ('startswith', 'sw'):
+                filter_conditions.append(getattr(model, field).ilike(value + '%'))
+            elif matches in ('endswith', 'ew'):
+                filter_conditions.append(getattr(model, field).ilike('%' + value))
+            elif matches == 'lt':
+                filter_conditions.append(getattr(model, field) < value)
+            elif matches == 'lte':
+                filter_conditions.append(getattr(model, field) <= value)
+            elif matches == 'gt':
+                filter_conditions.append(getattr(model, field) > value)
+            elif matches == 'gte':
+                filter_conditions.append(getattr(model, field) >= value)
+            elif matches == 'ne':
+                filter_conditions.append(getattr(model, field) != value)
+            elif isinstance(value, list):
+                filter_conditions.append(getattr(model, field).in_(value))
+            # Opinionated defaults: dates use >=, everything else uses ilike.
+            elif isinstance(value, (datetime.date, datetime.datetime)):
+                filter_conditions.append(getattr(model, field) >= value)
+            else:
+                filter_conditions.append(getattr(model, field).ilike('%' + value + '%'))
+
+        if filter_conditions:
+            if operator == 'or':
+                query = query.filter(or_(*filter_conditions))
+            else:
+                query = query.filter(and_(*filter_conditions))
+
+        if sort_clause is not None:
+            query = query.order_by(sort_clause)
 
         return query
 

@@ -16,7 +16,6 @@ import cherrypy
 from requestlogger import WSGILogger, ApacheFormatter
 from logging import StreamHandler
 from flask import Flask
-from flask_graphql import GraphQLView
 
 from grapinator import settings, log
 from grapinator.app import app

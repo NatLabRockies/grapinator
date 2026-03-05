@@ -1,6 +1,7 @@
 from sqlalchemy import (Column, DateTime, Integer, Numeric, String,
                         create_engine)
-from sqlalchemy.ext.declarative import declarative_base
+# declarative_base moved from sqlalchemy.ext.declarative to sqlalchemy.orm in SQLAlchemy 2.0
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import (
     scoped_session
     ,sessionmaker
@@ -10,7 +11,8 @@ from sqlalchemy.orm import (
 
 from grapinator import settings, schema_settings
 
-engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True, convert_unicode=True)
+# convert_unicode parameter was removed in SQLAlchemy 2.0
+engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
 db_session = scoped_session(
     sessionmaker(autocommit=False, autoflush=False, bind=engine)
     )
