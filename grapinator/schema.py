@@ -117,14 +117,6 @@ for clazz in schema_settings.get_gql_classes():
         ,clazz['gql_db_default_sort_col']
         )
 
-    # create the Graphene connection class
-    """     
-    globals()[clazz['gql_conn_class']] = gql_connection_class_constructor(
-        clazz['gql_conn_class']
-        ,globals()[clazz['gql_class']]
-        ) 
-    """
-
 def _make_gql_query_fields(cols):
     gql_attrs = {}
     for row in cols:

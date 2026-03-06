@@ -1,7 +1,6 @@
 [
     {
         'GQL_CLASS_NAME': 'Employees'
-        ,'GQL_CONN_CLASS_NAME': 'EmployeesConnection'
         ,'GQL_CONN_QUERY_NAME': 'employees'
         ,'DB_CLASS_NAME': 'db_Employees'
         ,'DB_TABLE_NAME': 'Employees'
@@ -151,7 +150,6 @@
     },
     {
         'GQL_CLASS_NAME': 'EmployeeTerritories'
-        ,'GQL_CONN_CLASS_NAME': 'EmployeeTerritoriesConnection'
         ,'GQL_CONN_QUERY_NAME': 'employee_territories'
         ,'DB_CLASS_NAME': 'db_EmployeeTerritories'
         ,'DB_TABLE_NAME': 'EmployeeTerritories'
@@ -214,7 +212,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Territories'
-        ,'GQL_CONN_CLASS_NAME': 'TerritoriesConnection'
         ,'GQL_CONN_QUERY_NAME': 'territories'
         ,'DB_CLASS_NAME': 'db_Territories'
         ,'DB_TABLE_NAME': 'Territories'
@@ -247,7 +244,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Regions'
-        ,'GQL_CONN_CLASS_NAME': 'RegionsConnection'
         ,'GQL_CONN_QUERY_NAME': 'regions'
         ,'DB_CLASS_NAME': 'db_Regions'
         ,'DB_TABLE_NAME': 'Regions'
@@ -273,7 +269,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Customers'
-        ,'GQL_CONN_CLASS_NAME': 'CustomersConnection'
         ,'GQL_CONN_QUERY_NAME': 'customers'
         ,'DB_CLASS_NAME': 'db_Customers'
         ,'DB_TABLE_NAME': 'Customers'
@@ -362,7 +357,6 @@
     },
     {
         'GQL_CLASS_NAME': 'CustomerCustomerDemo'
-        ,'GQL_CONN_CLASS_NAME': 'CustomerCustomerDemoConnection'
         ,'GQL_CONN_QUERY_NAME': 'customer_customer_demo'
         ,'DB_CLASS_NAME': 'db_CustomerCustomerDemo'
         ,'DB_TABLE_NAME': 'CustomerCustomerDemo'
@@ -388,7 +382,6 @@
     },
     {
         'GQL_CLASS_NAME': 'CustomerDemographics'
-        ,'GQL_CONN_CLASS_NAME': 'CustomerDemographicsConnection'
         ,'GQL_CONN_QUERY_NAME': 'customer_demographics'
         ,'DB_CLASS_NAME': 'db_CustomerDemographics'
         ,'DB_TABLE_NAME': 'CustomerDemographics'
@@ -414,7 +407,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Orders'
-        ,'GQL_CONN_CLASS_NAME': 'OrdersConnection'
         ,'GQL_CONN_QUERY_NAME': 'orders'
         ,'DB_CLASS_NAME': 'db_Orders'
         ,'DB_TABLE_NAME': 'Orders'
@@ -597,7 +589,6 @@
     },
     {
         'GQL_CLASS_NAME': 'OrderDetails'
-        ,'GQL_CONN_CLASS_NAME': 'OrderDetailsConnection'
         ,'GQL_CONN_QUERY_NAME': 'order_details'
         ,'DB_CLASS_NAME': 'db_OrderDetails'
         ,'DB_TABLE_NAME': 'Order Details'
@@ -663,7 +654,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Shippers'
-        ,'GQL_CONN_CLASS_NAME': 'ShippersConnection'
         ,'GQL_CONN_QUERY_NAME': 'shippers'
         ,'DB_CLASS_NAME': 'db_Shippers'
         ,'DB_TABLE_NAME': 'Shippers'
@@ -696,7 +686,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Products'
-        ,'GQL_CONN_CLASS_NAME': 'ProductsConnection'
         ,'GQL_CONN_QUERY_NAME': 'products'
         ,'DB_CLASS_NAME': 'db_Products'
         ,'DB_TABLE_NAME': 'products'
@@ -808,7 +797,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Categories'
-        ,'GQL_CONN_CLASS_NAME': 'CategoriesConnection'
         ,'GQL_CONN_QUERY_NAME': 'categories'
         ,'DB_CLASS_NAME': 'db_Categories'
         ,'DB_TABLE_NAME': 'Categories'
@@ -841,7 +829,6 @@
     },
     {
         'GQL_CLASS_NAME': 'Suppliers'
-        ,'GQL_CONN_CLASS_NAME': 'SuppliersConnection'
         ,'GQL_CONN_QUERY_NAME': 'suppliers'
         ,'DB_CLASS_NAME': 'db_Suppliers'
         ,'DB_TABLE_NAME': 'Suppliers'

@@ -190,7 +190,6 @@ class SchemaSettings(object):
                 } for r in row['FIELDS']]
             gql_class = {
                 'gql_class': row['GQL_CLASS_NAME']
-                ,'gql_conn_class': row['GQL_CONN_CLASS_NAME']
                 ,'gql_conn_query_name': row['GQL_CONN_QUERY_NAME']
                 ,'gql_db_class': row['DB_CLASS_NAME']
                 ,'gql_columns': gql_class_cols
