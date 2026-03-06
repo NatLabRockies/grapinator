@@ -40,6 +40,7 @@ python -m venv venv
 source venv/bin/activate
 (venv) $ export $(cat .env)
 (venv) $ pip install -e .
+(venv) $ pip install -e ".[dev]"
 (venv) $ python grapinator/app.py
 ```
 
@@ -49,6 +50,7 @@ conda create -n grapinator python
 conda activate grapinator
 (grapinator) $ export $(cat .env)
 (grapinator) $ pip install -e .
+(grapinator) $ pip install -e ".[dev]"
 (grapinator) $ python grapinator/app.py
 ```
 
