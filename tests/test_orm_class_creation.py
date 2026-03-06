@@ -1,5 +1,5 @@
 import unittest
-import context
+from . import context
 from datetime import datetime
 from grapinator import log, schema_settings
 from grapinator.model import *

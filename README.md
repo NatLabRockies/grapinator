@@ -54,7 +54,6 @@ conda activate grapinator
 
 #### Running unit tests from the command line
 Unit tests are located in the 'tests' directory.
-Integration tests are located in the 'tests_integration' directory.
 ```
-python -m unittest [filename]
+GQLAPI_CRYPT_KEY=testkey python -m unittest discover tests/ -v
 ```
