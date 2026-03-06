@@ -55,5 +55,5 @@ conda activate grapinator
 #### Running unit tests from the command line
 Unit tests are located in the 'tests' directory.
 ```
-GQLAPI_CRYPT_KEY=testkey python -m unittest discover tests/ -v
+GQLAPI_CRYPT_KEY=testkey python -m unittest discover -s tests -t . -v
 ```
