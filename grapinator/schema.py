@@ -75,9 +75,9 @@ class MyConnectionField(SQLAlchemyConnectionField):
             elif matches in ('regex', 're'):
                 filter_conditions.append(getattr(model, field).regexp_match(value))
             elif matches in ('startswith', 'sw'):
-                filter_conditions.append(getattr(model, field).ilike(value + '%'))
+                filter_conditions.append(getattr(model, field).ilike(str(value) + '%'))
             elif matches in ('endswith', 'ew'):
-                filter_conditions.append(getattr(model, field).ilike('%' + value))
+                filter_conditions.append(getattr(model, field).ilike('%' + str(value)))
             elif matches == 'lt':
                 filter_conditions.append(getattr(model, field) < value)
             elif matches == 'lte':
@@ -94,7 +94,7 @@ class MyConnectionField(SQLAlchemyConnectionField):
             elif isinstance(value, (datetime.date, datetime.datetime)):
                 filter_conditions.append(getattr(model, field) >= value)
             else:
-                filter_conditions.append(getattr(model, field).ilike('%' + value + '%'))
+                filter_conditions.append(getattr(model, field).ilike('%' + str(value) + '%'))
 
         if filter_conditions:
             if operator == 'or':

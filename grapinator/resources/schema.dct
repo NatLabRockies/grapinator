@@ -135,6 +135,15 @@
                 ,'db_col_name': 'employee_territories'
                 ,'db_type': String
             },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'orders'
+                ,'gql_of_type': 'grapinator.schema.Orders'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Orders for employee.'
+                ,'db_col_name': 'orders'
+                ,'db_type': String
+            },
         ]
         ,'RELATIONSHIPS': [
             {
@@ -143,6 +152,15 @@
                 ,'rel_arguments': {
                     'foreign_keys': '[db_EmployeeTerritories.employee_id]'
                     ,'primaryjoin': 'db_EmployeeTerritories.employee_id == db_Employees.employee_id'
+                    ,'uselist': True
+                }
+            },
+            {
+                'rel_name': 'orders'
+                ,'rel_class_name': 'db_Orders'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Orders.employee_id]'
+                    ,'primaryjoin': 'db_Orders.employee_id == db_Employees.employee_id'
                     ,'uselist': True
                 }
             },
@@ -239,8 +257,27 @@
                 ,'db_col_name': 'RegionID'
                 ,'db_type': Integer
             },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'region'
+                ,'gql_of_type': 'grapinator.schema.Regions'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Region for territory.'
+                ,'db_col_name': 'region'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'region'
+                ,'rel_class_name': 'db_Regions'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Regions.region_id]'
+                    ,'primaryjoin': 'db_Regions.region_id == db_Territories.region_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'Regions'
@@ -264,8 +301,27 @@
                 ,'db_col_name': 'RegionDescription'
                 ,'db_type': String
             },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'territories'
+                ,'gql_of_type': 'grapinator.schema.Territories'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Territories in region.'
+                ,'db_col_name': 'territories'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'territories'
+                ,'rel_class_name': 'db_Territories'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Territories.region_id]'
+                    ,'primaryjoin': 'db_Territories.region_id == db_Regions.region_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'Customers'
@@ -351,9 +407,46 @@
                 ,'gql_description': 'Contact fax.'
                 ,'db_col_name': 'Fax'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'orders'
+                ,'gql_of_type': 'grapinator.schema.Orders'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Orders for customer.'
+                ,'db_col_name': 'orders'
+                ,'db_type': String
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'customer_customer_demo'
+                ,'gql_of_type': 'grapinator.schema.CustomerCustomerDemo'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Customer demographics links for customer.'
+                ,'db_col_name': 'customer_customer_demo'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'orders'
+                ,'rel_class_name': 'db_Orders'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Orders.customer_id]'
+                    ,'primaryjoin': 'db_Orders.customer_id == db_Customers.customer_id'
+                    ,'uselist': True
+                }
+            },
+            {
+                'rel_name': 'customer_customer_demo'
+                ,'rel_class_name': 'db_CustomerCustomerDemo'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_CustomerCustomerDemo.customer_id]'
+                    ,'primaryjoin': 'db_CustomerCustomerDemo.customer_id == db_Customers.customer_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'CustomerCustomerDemo'
@@ -376,9 +469,46 @@
                 ,'gql_description': 'Company type id.'
                 ,'db_col_name': 'CustomerTypeID'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'customer'
+                ,'gql_of_type': 'grapinator.schema.Customers'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Customer for this demo link.'
+                ,'db_col_name': 'customer'
+                ,'db_type': String
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'customer_demographics'
+                ,'gql_of_type': 'grapinator.schema.CustomerDemographics'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Customer demographics for this demo link.'
+                ,'db_col_name': 'customer_demographics'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'customer'
+                ,'rel_class_name': 'db_Customers'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Customers.customer_id]'
+                    ,'primaryjoin': 'db_Customers.customer_id == db_CustomerCustomerDemo.customer_id'
+                    ,'uselist': True
+                }
+            },
+            {
+                'rel_name': 'customer_demographics'
+                ,'rel_class_name': 'db_CustomerDemographics'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_CustomerDemographics.customer_type_id]'
+                    ,'primaryjoin': 'db_CustomerDemographics.customer_type_id == db_CustomerCustomerDemo.customer_type_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'CustomerDemographics'
@@ -401,9 +531,28 @@
                 ,'gql_description': 'Customer description.'
                 ,'db_col_name': 'CustomerDesc'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'customer_customer_demo'
+                ,'gql_of_type': 'grapinator.schema.CustomerCustomerDemo'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Customer demographic links for this type.'
+                ,'db_col_name': 'customer_customer_demo'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'customer_customer_demo'
+                ,'rel_class_name': 'db_CustomerCustomerDemo'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_CustomerCustomerDemo.customer_type_id]'
+                    ,'primaryjoin': 'db_CustomerCustomerDemo.customer_type_id == db_CustomerDemographics.customer_type_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'Orders'
@@ -639,6 +788,15 @@
                 ,'db_col_name': 'product'
                 ,'db_type': String
             },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'order'
+                ,'gql_of_type': 'grapinator.schema.Orders'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Order for order detail.'
+                ,'db_col_name': 'order'
+                ,'db_type': String
+            },
         ]
         ,'RELATIONSHIPS': [
            {
@@ -647,6 +805,15 @@
                 ,'rel_arguments': {
                     'foreign_keys': '[db_Products.product_id]'
                     ,'primaryjoin': 'db_Products.product_id == db_OrderDetails.product_id'
+                    ,'uselist': True
+                }
+            },
+            {
+                'rel_name': 'order'
+                ,'rel_class_name': 'db_Orders'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Orders.order_id]'
+                    ,'primaryjoin': 'db_Orders.order_id == db_OrderDetails.order_id'
                     ,'uselist': True
                 }
             },
@@ -680,9 +847,28 @@
                 ,'gql_description': 'Phone.'
                 ,'db_col_name': 'Phone'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'orders'
+                ,'gql_of_type': 'grapinator.schema.Orders'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Orders for shipper.'
+                ,'db_col_name': 'orders'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'orders'
+                ,'rel_class_name': 'db_Orders'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Orders.ship_via]'
+                    ,'primaryjoin': 'db_Orders.ship_via == db_Shippers.shipper_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'Products'
@@ -773,6 +959,15 @@
                 ,'db_col_name': 'category'
                 ,'db_type': String
             },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'order_details'
+                ,'gql_of_type': 'grapinator.schema.OrderDetails'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Order details for product.'
+                ,'db_col_name': 'order_details'
+                ,'db_type': String
+            },
         ]
         ,'RELATIONSHIPS': [
             {
@@ -790,6 +985,15 @@
                 ,'rel_arguments': {
                     'foreign_keys': '[db_Categories.category_id]'
                     ,'primaryjoin': 'db_Categories.category_id == db_Products.category_id'
+                    ,'uselist': True
+                }
+            },
+            {
+                'rel_name': 'order_details'
+                ,'rel_class_name': 'db_OrderDetails'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_OrderDetails.product_id]'
+                    ,'primaryjoin': 'db_OrderDetails.product_id == db_Products.product_id'
                     ,'uselist': True
                 }
             },
@@ -823,9 +1027,28 @@
                 ,'gql_description': 'Description.'
                 ,'db_col_name': 'Description'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'products'
+                ,'gql_of_type': 'grapinator.schema.Products'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Products in category.'
+                ,'db_col_name': 'products'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'products'
+                ,'rel_class_name': 'db_Products'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Products.category_id]'
+                    ,'primaryjoin': 'db_Products.category_id == db_Categories.category_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
     {
         'GQL_CLASS_NAME': 'Suppliers'
@@ -918,8 +1141,27 @@
                 ,'gql_description': 'Home page.'
                 ,'db_col_name': 'HomePage'
                 ,'db_type': String
-            }
+            },
+            {
+                'gql_isqueryable': False
+                ,'gql_col_name': 'products'
+                ,'gql_of_type': 'grapinator.schema.Products'
+                ,'gql_type': graphene.List
+                ,'gql_description': 'Products for supplier.'
+                ,'db_col_name': 'products'
+                ,'db_type': String
+            },
         ]
-        ,'RELATIONSHIPS': []
+        ,'RELATIONSHIPS': [
+            {
+                'rel_name': 'products'
+                ,'rel_class_name': 'db_Products'
+                ,'rel_arguments': {
+                    'foreign_keys': '[db_Products.supplier_id]'
+                    ,'primaryjoin': 'db_Products.supplier_id == db_Suppliers.supplier_id'
+                    ,'uselist': True
+                }
+            },
+        ]
     },
 ]
