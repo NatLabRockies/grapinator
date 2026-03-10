@@ -1,0 +1,113 @@
+# GraphQL Integration Test Configuration
+# This file defines validation criteria and test expectations for the Northwind database
+
+# Performance thresholds (in milliseconds)
+performance_thresholds:
+  max_simple_query_time: 100      # Simple single-entity queries
+  max_complex_query_time: 500     # Complex relationship queries  
+  max_large_dataset_time: 2000    # Large dataset queries
+
+# Expected result counts for specific queries (standard Northwind dataset)
+expected_counts:
+  GetAllEmployees: 9              # Total employees
+  GetEmployeeById: 1              # Single employee lookup
+  GetAllCategories: 8             # Product categories
+  CustomersByCountry: 13          # USA customers
+  AllRegions: 4                   # Geographic regions 
+  AllShippers: 3                  # Shipping companies
+  EmployeesByCity: 5              # Seattle employees
+  BeverageProductsSorted: 12      # Active beverage products
+
+# Content validation rules
+content_validations:
+  GetEmployeeById:
+    required_fields: ["employee_id", "first_name", "last_name"]
+    expected_employee:
+      first_name: "Nancy"
+      last_name: "Davolio"
+      employee_id: 1
+  
+  CustomersByCountry:
+    required_fields: ["customer_id", "company_name", "country"]
+    all_must_have:
+      country: "USA"
+  
+  ProductsByCategory:
+    required_fields: ["product_id", "product_name", "category_id"]
+    all_must_have:
+      category_id: 1
+
+# Queries expected to return empty results
+empty_result_queries:
+  - NonExistentEmployee
+  - NoResultsExpected
+  - ProductsWithoutCategory
+
+# Queries that test specific business logic
+business_logic_tests:
+  DiscontinuedProducts:
+    description: "All products should have discontinued = '1'"
+    field_validation:
+      discontinued: "1"
+  
+  LowStockProducts:
+    description: "All products should have units_in_stock < 10 and discontinued = '0'"
+    field_validation:
+      discontinued: "0"
+    field_comparison:
+      units_in_stock: {"operator": "lt", "value": 10}
+  
+  ExpensiveProducts:
+    description: "All products should have unit_price > 50"
+    field_comparison:
+      unit_price: {"operator": "gt", "value": 50}
+
+# Data integrity checks
+integrity_checks:
+  foreign_key_consistency:
+    - query: "ProductWithCategoryAndSupplier"
+      checks:
+        - "category should not be null when category_id is present"
+        - "supplier should not be null when supplier_id is present"
+  
+  date_format_consistency:
+    - query: "EmployeesByHireDate"
+      checks:
+        - "hire_date should be valid ISO date format"
+        - "hire_date should not be in the future"
+
+# Relationship validation
+relationship_tests:
+  EmployeeWithTerritories:
+    description: "Employee 1 should have assigned territories with valid regions"
+    required_relationships:
+      - "employee_territories"
+      - "employee_territories.territories"
+      - "employee_territories.territories.region"
+  
+  OrderDetailsWithProducts:
+    description: "Order details should have complete product information"
+    required_relationships:
+      - "product"
+      - "product.category"
+      - "product.supplier"
+
+# Comparative testing configuration
+comparison_tests:
+  # Test queries that should have identical results across endpoints
+  identical_result_queries:
+    - GetAllEmployees
+    - GetAllCategories
+    - AllRegions
+    - AllShippers
+  
+  # Test queries where small differences might be acceptable (e.g., timestamps)
+  flexible_comparison_queries:
+    - OrdersAfter1996
+    - Orders1997
+  
+  # Fields to ignore during comparison (e.g., auto-generated timestamps)
+  ignore_fields:
+    - "__typename"
+    - "created_at"
+    - "updated_at"
