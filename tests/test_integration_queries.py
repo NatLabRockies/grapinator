@@ -446,6 +446,25 @@ class IntegrationTestSuite:
         self.validation_results: Dict[str, ValidationResult] = {}
         self.comparison_results: Dict[str, ComparisonResult] = {}
     
+    def _get_queries_for_comparison(self) -> Dict[str, Any]:
+        """Get the list of queries to execute for endpoint comparison based on config."""
+        # Check if identical_result_queries is configured
+        comparison_config = self.validator.config.get('comparison_tests', {})
+        identical_queries = comparison_config.get('identical_result_queries', [])
+        
+        if identical_queries:
+            # Filter queries to only include the specified ones
+            filtered_queries = {}
+            for query_name in identical_queries:
+                if query_name in self.query_parser.queries:
+                    filtered_queries[query_name] = self.query_parser.queries[query_name]
+                else:
+                    logger.warning(f"Query '{query_name}' specified in identical_result_queries but not found in query file")
+            return filtered_queries
+        else:
+            # Return all queries if no filter is configured
+            return self.query_parser.queries
+
     def run_tests(self) -> Dict[str, Any]:
         """Execute all tests and return comprehensive results."""
         logger.info("Starting GraphQL integration test suite")
@@ -458,8 +477,10 @@ class IntegrationTestSuite:
         
         # Execute queries on secondary endpoint if provided
         if self.secondary_client:
-            logger.info(f"Executing {len(self.query_parser.queries)} queries on secondary endpoint")
-            self._execute_queries_on_endpoint(self.secondary_client, self.secondary_results)
+            # For comparison tests, use filtered query set if configured
+            queries_to_compare = self._get_queries_for_comparison()
+            logger.info(f"Executing {len(queries_to_compare)} queries on secondary endpoint for comparison")
+            self._execute_queries_on_endpoint(self.secondary_client, self.secondary_results, queries_to_compare)
         
         # Validate primary results
         logger.info("Validating query results")
@@ -479,9 +500,19 @@ class IntegrationTestSuite:
         
         return summary
     
-    def _execute_queries_on_endpoint(self, client: GraphQLClient, results_dict: Dict[str, QueryResult]):
-        """Execute all queries on a specific endpoint."""
-        for query_name, query_info in self.query_parser.queries.items():
+    def _execute_queries_on_endpoint(self, client: GraphQLClient, results_dict: Dict[str, QueryResult], 
+                                   queries_to_run: Optional[Dict[str, Any]] = None):
+        """Execute queries on a specific endpoint.
+        
+        Args:
+            client: The GraphQL client to use
+            results_dict: Dictionary to store results
+            queries_to_run: Optional dict of queries to run, defaults to all queries
+        """
+        if queries_to_run is None:
+            queries_to_run = self.query_parser.queries
+            
+        for query_name, query_info in queries_to_run.items():
             logger.info(f"Executing query: {query_name}")
             
             result = client.execute_query(query_info['query'])
@@ -593,6 +624,11 @@ class IntegrationTestSuite:
             summary['detailed_results']['comparison_results'] = {
                 name: asdict(result) for name, result in self.comparison_results.items()
             }
+            
+            # Add secondary endpoint results to detailed output
+            summary['detailed_results']['secondary_query_results'] = {
+                name: asdict(result) for name, result in self.secondary_results.items()
+            }
         
         return summary
 
@@ -645,10 +681,19 @@ def main():
         
         print(f"Total Queries: {execution['total_queries']}")
         print(f"Execution Time: {execution['total_execution_time']:.2f}s")
-        print(f"Primary Endpoint: {execution['primary_endpoint']}")
-        print(f"Success Rate: {execution['primary_success_rate']:.1f}%")
-        print(f"Avg Response Time: {execution['primary_avg_response_time_ms']:.1f}ms")
-        print(f"Validation Pass Rate: {validation['validation_pass_rate']:.1f}%")
+        
+        # Primary endpoint stats
+        print(f"\nPrimary Endpoint: {execution['primary_endpoint']}")
+        print(f"  Success Rate: {execution['primary_success_rate']:.1f}%")
+        print(f"  Avg Response Time: {execution['primary_avg_response_time_ms']:.1f}ms")
+        
+        # Secondary endpoint stats (if available)
+        if 'secondary_endpoint' in execution:
+            print(f"\nSecondary Endpoint: {execution['secondary_endpoint']}")
+            print(f"  Success Rate: {execution['secondary_success_rate']:.1f}%")
+            print(f"  Avg Response Time: {execution['secondary_avg_response_time_ms']:.1f}ms")
+        
+        print(f"\nValidation Pass Rate: {validation['validation_pass_rate']:.1f}%")
         
         if 'comparison_summary' in results:
             comparison = results['comparison_summary']
