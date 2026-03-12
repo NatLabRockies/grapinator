@@ -122,7 +122,7 @@ class QueryParser:
 class GraphQLClient:
     """GraphQL client for executing queries."""
     
-    def __init__(self, endpoint: str, timeout: int = 30):
+    def __init__(self, endpoint: str, timeout: int = 300):
         self.endpoint = endpoint
         self.timeout = timeout
         self.session = requests.Session()
