@@ -15,6 +15,15 @@ QUERY_FILE="integration_test_queries.md"
 CONFIG_FILE="test_config.yaml"
 ENDPOINTS_FILE="endpoints.json"
 
+# Determine Python executable
+if [[ -f "../venv/bin/python" ]]; then
+    PYTHON_CMD="../venv/bin/python"
+elif [[ -f "../venv/Scripts/python.exe" ]]; then
+    PYTHON_CMD="../venv/Scripts/python.exe"
+else
+    PYTHON_CMD="python"
+fi
+
 print_usage() {
     echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
@@ -112,9 +121,10 @@ run_single_endpoint_test() {
     
     echo -e "${YELLOW}Testing single endpoint: $endpoint${NC}"
     
-    python test_integration_queries.py \
+    $PYTHON_CMD test_integration_queries.py \
         --primary-endpoint "$endpoint" \
         --query-file "$QUERY_FILE" \
+        --config-file "$CONFIG_FILE" \
         --output "$output_file" \
         ${VERBOSE:+--verbose}
     
@@ -130,10 +140,11 @@ run_comparison_test() {
     echo -e "  Primary: $endpoint1"
     echo -e "  Secondary: $endpoint2"
     
-    python test_integration_queries.py \
+    $PYTHON_CMD test_integration_queries.py \
         --primary-endpoint "$endpoint1" \
         --secondary-endpoint "$endpoint2" \
         --query-file "$QUERY_FILE" \
+        --config-file "$CONFIG_FILE" \
         --output "$output_file" \
         ${VERBOSE:+--verbose}
     
@@ -151,7 +162,7 @@ run_multi_endpoint_test() {
     
     echo -e "${YELLOW}Running multi-endpoint tests using: $ENDPOINTS_FILE${NC}"
     
-    python test_endpoint_comparison.py \
+    $PYTHON_CMD test_endpoint_comparison.py \
         --config "$CONFIG_FILE" \
         --endpoints "$ENDPOINTS_FILE" \
         --queries "$QUERY_FILE" \

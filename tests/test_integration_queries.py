@@ -198,6 +198,7 @@ class ResultValidator:
         """Initialize validator with configuration."""
         self.config = {}
         self.expected_counts = {}
+        self.performance_thresholds = {}
         
         # Load configuration if provided
         if config_file and Path(config_file).exists():
@@ -205,8 +206,10 @@ class ResultValidator:
                 with open(config_file, 'r') as f:
                     self.config = yaml.safe_load(f)
                     self.expected_counts = self.config.get('expected_counts', {})
+                    self.performance_thresholds = self.config.get('performance_thresholds', {})
                     logger.info(f"Loaded configuration from {config_file}")
                     logger.debug(f"Expected counts: {self.expected_counts}")
+                    logger.debug(f"Performance thresholds: {self.performance_thresholds}")
             except Exception as e:
                 logger.warning(f"Failed to load config file {config_file}: {e}")
                 self._use_default_config()
@@ -224,6 +227,12 @@ class ResultValidator:
             'CustomersByCountry': 13,  # USA customers
             'AllRegions': 4,
             'AllShippers': 3,
+        }
+        # Default performance thresholds
+        self.performance_thresholds = {
+            'max_simple_query_time': 100,
+            'max_complex_query_time': 500,
+            'max_large_dataset_time': 2000
         }
     
     # Queries that should return specific employee (Nancy Davolio)
@@ -246,8 +255,9 @@ class ResultValidator:
             )
         
         # Check response time performance
-        if result.response_time_ms > 2000:  # 2 second threshold
-            validation_errors.append(f"Query too slow: {result.response_time_ms:.1f}ms > 2000ms")
+        threshold = self._get_performance_threshold(query_name)
+        if result.response_time_ms > threshold:
+            validation_errors.append(f"Query too slow: {result.response_time_ms:.1f}ms > {threshold}ms")
         
         # Validate data structure
         if not result.data:
@@ -295,6 +305,23 @@ class ResultValidator:
             actual_count=actual_count,
             validation_errors=validation_errors
         )
+    
+    def _get_performance_threshold(self, query_name: str) -> float:
+        """Get appropriate performance threshold based on query type."""
+        # Determine query complexity based on name patterns
+        query_lower = query_name.lower()
+        
+        # Large dataset queries - use max_large_dataset_time
+        if any(pattern in query_lower for pattern in ['all', 'orders', 'large', 'unshipped']):
+            return self.performance_thresholds.get('max_large_dataset_time', 2000)
+        
+        # Complex relationship queries - use max_complex_query_time  
+        elif any(pattern in query_lower for pattern in ['with', 'complete', 'details', 'chain', 'history']):
+            return self.performance_thresholds.get('max_complex_query_time', 500)
+        
+        # Simple queries - use max_simple_query_time
+        else:
+            return self.performance_thresholds.get('max_simple_query_time', 100)
     
     def _extract_main_collection(self, data: Dict) -> Optional[Dict]:
         """Extract the main data collection from GraphQL response."""
