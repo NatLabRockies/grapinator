@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 import requests
 from deepdiff import DeepDiff
 
-from test_integration_queries import (
+from .test_integration_queries import (
     QueryParser, GraphQLClient, QueryResult, 
     ValidationResult, ComparisonResult, IntegrationTestSuite
 )
