@@ -111,3 +111,4 @@ tests/debug_results.json
 tests/test_results_final.json
 tests/test_results_fixed.json
 tests/test_performance_fix.json
+tests/comparison_results.json
