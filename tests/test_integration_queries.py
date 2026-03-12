@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import logging
 
 import requests
+import yaml
 from deepdiff import DeepDiff
 
 # Configure logging
@@ -193,15 +194,37 @@ class GraphQLClient:
 class ResultValidator:
     """Validate GraphQL query results against expected criteria."""
     
-    # Expected counts for standard Northwind dataset
-    EXPECTED_COUNTS = {
-        'GetAllEmployees': 9,
-        'GetEmployeeById': 1,
-        'GetAllCategories': 8,
-        'CustomersByCountry': 13,  # USA customers
-        'AllRegions': 4,
-        'AllShippers': 3,
-    }
+    def __init__(self, config_file: Optional[str] = None):
+        """Initialize validator with configuration."""
+        self.config = {}
+        self.expected_counts = {}
+        
+        # Load configuration if provided
+        if config_file and Path(config_file).exists():
+            try:
+                with open(config_file, 'r') as f:
+                    self.config = yaml.safe_load(f)
+                    self.expected_counts = self.config.get('expected_counts', {})
+                    logger.info(f"Loaded configuration from {config_file}")
+                    logger.debug(f"Expected counts: {self.expected_counts}")
+            except Exception as e:
+                logger.warning(f"Failed to load config file {config_file}: {e}")
+                self._use_default_config()
+        else:
+            logger.info("No config file provided, using default expected counts")
+            self._use_default_config()
+    
+    def _use_default_config(self):
+        """Fallback to hardcoded expected counts."""
+        # Expected counts for standard Northwind dataset
+        self.expected_counts = {
+            'GetAllEmployees': 9,
+            'GetEmployeeById': 1,
+            'GetAllCategories': 8,
+            'CustomersByCountry': 13,  # USA customers
+            'AllRegions': 4,
+            'AllShippers': 3,
+        }
     
     # Queries that should return specific employee (Nancy Davolio)
     NANCY_DAVOLIO_QUERIES = ['GetEmployeeById']
@@ -248,7 +271,7 @@ class ResultValidator:
         
         # Count validation
         actual_count = len(main_collection.get('edges', []))
-        expected_count = self.EXPECTED_COUNTS.get(query_name)
+        expected_count = self.expected_counts.get(query_name)
         
         if expected_count is not None and actual_count != expected_count:
             validation_errors.append(
@@ -384,11 +407,11 @@ class IntegrationTestSuite:
     """Main test suite coordinator."""
     
     def __init__(self, query_file: str, primary_endpoint: str, 
-                 secondary_endpoint: Optional[str] = None):
+                 secondary_endpoint: Optional[str] = None, config_file: Optional[str] = None):
         self.query_parser = QueryParser(query_file)
         self.primary_client = GraphQLClient(primary_endpoint)
         self.secondary_client = GraphQLClient(secondary_endpoint) if secondary_endpoint else None
-        self.validator = ResultValidator()
+        self.validator = ResultValidator(config_file)
         self.comparator = EndpointComparator(primary_endpoint, secondary_endpoint) if secondary_endpoint else None
         
         self.primary_results: Dict[str, QueryResult] = {}
@@ -552,6 +575,8 @@ def main():
     parser = argparse.ArgumentParser(description='GraphQL Integration Test Suite')
     parser.add_argument('--query-file', '-f', default='integration_test_queries.md',
                         help='Path to markdown file containing queries')
+    parser.add_argument('--config-file', '-c', default='test_config.yaml', 
+                        help='Path to YAML configuration file')
     parser.add_argument('--primary-endpoint', '-p', required=True,
                         help='Primary GraphQL endpoint URL')
     parser.add_argument('--secondary-endpoint', '-s',
@@ -571,7 +596,8 @@ def main():
         test_suite = IntegrationTestSuite(
             query_file=args.query_file,
             primary_endpoint=args.primary_endpoint,
-            secondary_endpoint=args.secondary_endpoint
+            secondary_endpoint=args.secondary_endpoint,
+            config_file=args.config_file
         )
         
         results = test_suite.run_tests()

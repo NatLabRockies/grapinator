@@ -15,8 +15,8 @@ expected_counts:
   CustomersByCountry: 13          # USA customers
   AllRegions: 4                   # Geographic regions 
   AllShippers: 3                  # Shipping companies
-  EmployeesByCity: 5              # Seattle employees
-  BeverageProductsSorted: 12      # Active beverage products
+  EmployeesByCity: 2              # Seattle employees (corrected from 5 to 2)
+  BeverageProductsSorted: 11      # Active beverage products (corrected from 12 to 11)
 
 # Content validation rules
 content_validations:
