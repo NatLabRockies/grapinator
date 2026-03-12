@@ -6,7 +6,7 @@ from graphql_server.http import GraphQLRequestData
 
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
-from grapinator.schema import *
+from grapinator.schema import gql_schema
 
 
 class FixedGraphQLView(GraphQLView):
