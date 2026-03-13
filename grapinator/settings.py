@@ -148,7 +148,7 @@ class SchemaSettings(object):
 
 
     def _loadSchemaDict(self, file_name):
-        s = open(file_name, 'r').read()
+        with open(file_name, 'r') as f: s = f.read()
         schema_dict = eval(s)
         return schema_dict
 
