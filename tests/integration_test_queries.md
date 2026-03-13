@@ -605,18 +605,24 @@ query HighValueOrders {
 Test inventory-related queries.
 ```graphql
 query LowStockProducts {
-  products(units_in_stock: 10, matches: "lt", discontinued: "0", sort_by: "units_in_stock", sort_dir: "asc") {
+  products(
+    matches: "lte"
+    units_in_stock: 10
+    logic: "and"
+    discontinued: "0"
+    sort_by: "units_in_stock"
+    sort_dir: "desc"
+  ) {
     edges {
       node {
         product_id
         product_name
         units_in_stock
         reorder_level
-        
+        discontinued
         category {
           category_name
         }
-        
         supplier {
           company_name
           contact_name
@@ -625,7 +631,6 @@ query LowStockProducts {
       }
     }
   }
-}
 ```
 
 ---

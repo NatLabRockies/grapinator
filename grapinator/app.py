@@ -66,10 +66,33 @@ app.add_url_rule(
 # set default response headers per NREL spec.
 @app.after_request
 def apply_custom_response(response):
+    # Existing spec headers from older version of Grapinator
     response.headers["X-Frame-Options"] = settings.HTTP_HEADERS_XFRAME
     response.headers["X-XSS-Protection"] = settings.HTTP_HEADERS_XSS_PROTECTION
     response.headers["Cache-Control"] = settings.HTTP_HEADER_CACHE_CONTROL
     response.headers["Access-Control-Allow-Headers"] = settings.CORS_ALLOW_HEADERS
+    
+    # Modern security headers (GraphiQL compatible)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"  
+    
+    # Relaxed CSP for GraphiQL functionality
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; "
+        "font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com data:; "
+        "img-src 'self' data: https: http:; "
+        "connect-src 'self' ws: wss: http: https:; "
+        "frame-src 'self'; "
+        "worker-src 'self' blob:; "
+        "child-src 'self' blob:; "
+        "object-src 'none'"
+    )
+    
+    # Server information disclosure prevention
+    response.headers.pop('Server', None)  # Remove server header if present
+    
     return response
 
 @app.teardown_appcontext
