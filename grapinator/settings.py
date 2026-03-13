@@ -148,9 +148,39 @@ class SchemaSettings(object):
 
 
     def _loadSchemaDict(self, file_name):
-        with open(file_name, 'r') as f: s = f.read()
-        schema_dict = eval(s)
-        return schema_dict
+        # Create safe namespace with only the required imports
+        safe_namespace = {
+            '__builtins__': {},  # Remove all builtins for security
+            'graphene': graphene,
+            'Column': Column,
+            'BigInteger': BigInteger,
+            'Boolean': Boolean,
+            'Date': Date,
+            'DateTime': DateTime,
+            'Enum': Enum,
+            'Float': Float,
+            'Integer': Integer,
+            'Interval': Interval,
+            'LargeBinary': LargeBinary,
+            'Numeric': Numeric,
+            'PickleType': PickleType,
+            'SmallInteger': SmallInteger,
+            'String': String,
+            'Text': Text,
+            'Time': Time,
+            'Unicode': Unicode,
+            'UnicodeText': UnicodeText,
+            'relationship': relationship,
+            'synonym': synonym,
+        }
+        
+        with open(file_name, 'r') as f:
+            schema_content = f.read()
+        
+        # Execute the file content with controlled namespace
+        local_namespace = {}
+        exec(f"schema_dict = {schema_content}", safe_namespace, local_namespace)
+        return local_namespace['schema_dict']
 
     def _make_db_classes(self):
         db_classes = []
