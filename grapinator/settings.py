@@ -49,7 +49,6 @@ class Settings(object):
     HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS = None
     HTTP_HEADERS_REFERRER_POLICY = None
     HTTP_HEADERS_CONTENT_SECURITY_POLICY = None
-    APP_VERSION = None
     GQL_SCHEMA = None
     FLASK_SERVER_NAME = None
     FLASK_DEBUG = None  
@@ -80,9 +79,6 @@ class Settings(object):
             properties_file = cwd + self.config_file
             properties.read(properties_file)
 
-            # load APP section
-            self.APP_VERSION = properties.get('APP', 'VERSION')
-            
             # load WSGI section
             self.WSGI_SOCKET_HOST = properties.get('WSGI', 'WSGI_SOCKET_HOST')
             self.WSGI_SOCKET_PORT = properties.getint('WSGI', 'WSGI_SOCKET_PORT')
