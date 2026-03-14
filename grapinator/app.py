@@ -73,22 +73,11 @@ def apply_custom_response(response):
     response.headers["Access-Control-Allow-Headers"] = settings.CORS_ALLOW_HEADERS
     
     # Modern security headers (GraphiQL compatible)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"  
+    response.headers["X-Content-Type-Options"] = settings.HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS
+    response.headers["Referrer-Policy"] = settings.HTTP_HEADERS_REFERRER_POLICY
     
     # Relaxed CSP for GraphiQL functionality
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; "
-        "font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com data:; "
-        "img-src 'self' data: https: http:; "
-        "connect-src 'self' ws: wss: http: https:; "
-        "frame-src 'self'; "
-        "worker-src 'self' blob:; "
-        "child-src 'self' blob:; "
-        "object-src 'none'"
-    )
+    response.headers["Content-Security-Policy"] = settings.HTTP_HEADERS_CONTENT_SECURITY_POLICY
     
     # Server information disclosure prevention
     response.headers.pop('Server', None)  # Remove server header if present
