@@ -18,9 +18,6 @@ except (TypeError, FileNotFoundError) as err:
     print(f"Schema settings runtime error: {err}")
     sys.exit(1)
 
-# setup app
-version = settings.APP_VERSION
-
 # setup logging
 logging_conf_path = path.abspath(path.dirname(__file__)) + '/resources/logging.conf'
 logging.config.fileConfig(logging_conf_path)

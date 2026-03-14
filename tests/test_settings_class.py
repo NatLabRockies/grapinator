@@ -91,10 +91,6 @@ class TestSettingsLoadedValues(unittest.TestCase):
         from grapinator import settings
         cls.settings = settings
 
-    def test_app_version_is_string(self):
-        self.assertIsInstance(self.settings.APP_VERSION, str)
-        self.assertTrue(len(self.settings.APP_VERSION) > 0)
-
     def test_flask_api_endpoint_starts_with_slash(self):
         self.assertTrue(self.settings.FLASK_API_ENDPOINT.startswith('/'))
 
