@@ -631,6 +631,7 @@ query LowStockProducts {
       }
     }
   }
+}
 ```
 
 ---
