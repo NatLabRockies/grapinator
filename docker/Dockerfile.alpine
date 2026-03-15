@@ -63,6 +63,11 @@ RUN apk add --update-cache \
 && apk del gcc g++ make musl-dev python3-dev libffi-dev libressl-dev git \
 && rm -rf /var/cache/apk/*
 
+RUN addgroup -S grapinator && adduser -S grapinator -G grapinator \
+&& chown -R grapinator:grapinator $SERVICE_HOME
+
+USER grapinator
+
 EXPOSE 8443
 
 ENTRYPOINT ["/bin/sh", "-c", "$SERVICE_HOME/grapinator_service.sh"]
