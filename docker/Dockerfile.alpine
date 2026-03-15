@@ -3,18 +3,18 @@ FROM alpine:3
 
 # Note: This build includes required drivers for Oracle connectivity download from:
 # https://download.oracle.com/otn_software/linux/instantclient/211000/instantclient-basic-linux.x64-21.1.0.0.0.zip
-ENV ORCL_URL https://download.oracle.com/otn_software/linux/instantclient/211000
-ENV ORCL_BIN instantclient-basic-linux.x64-21.1.0.0.0.zip
+ENV ORCL_URL=https://download.oracle.com/otn_software/linux/instantclient/211000
+ENV ORCL_BIN=instantclient-basic-linux.x64-21.1.0.0.0.zip
 
-ENV ORACLE_BASE /usr/lib/instantclient
-ENV LD_LIBRARY_PATH ${ORACLE_BASE}:${LD_LIBRARY_PATH}
-ENV SERVICE_HOME /opt/grapinator
+ENV ORACLE_BASE=/usr/lib/instantclient
+ENV LD_LIBRARY_PATH=${ORACLE_BASE}
+ENV SERVICE_HOME=/opt/grapinator
 
 # required to compile python cryptography lib
-ENV CRYPTOGRAPHY_DONT_BUILD_RUST 1
+ENV CRYPTOGRAPHY_DONT_BUILD_RUST=1
 
 # set local docker resources relative path
-ENV DOCKER_RESOURCES docker/resources
+ENV DOCKER_RESOURCES=docker/resources
 
 # Set the working directory to SERVICE_HOME
 WORKDIR $SERVICE_HOME
@@ -45,7 +45,7 @@ RUN apk add --update-cache \
 	git \
 && rm -rf /var/cache/apk/* \
 && echo "Download Oracle driver: $SERVICE_HOME/$ORCL_BIN" \
-&& curl --output $SERVICE_HOME/$ORCL_BIN $ORCL_URL/$ORCL_BIN \
+&& curl --insecure --output $SERVICE_HOME/$ORCL_BIN $ORCL_URL/$ORCL_BIN \
 && echo "Install Oracle drivers..." \
 && mkdir -p $ORACLE_BASE \
 && unzip -j -d $ORACLE_BASE $SERVICE_HOME/$ORCL_BIN \
