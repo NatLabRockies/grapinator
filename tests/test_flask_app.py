@@ -1,8 +1,8 @@
 """Unit tests for Flask app behaviour (grapinator/app.py).
 
 Covers:
-  - apply_custom_response  : security response headers
-  - FixedGraphQLView       : the two bug-fixes for render_graphql_ide
+  - SecurityHeadersMiddleware : security response headers (svc_cherrypy.py)
+  - FixedGraphQLView          : the two bug-fixes for render_graphql_ide
       Bug 1 — None rendered as JSON null (not Python 'None' string)
       Bug 2 — operation_name passed with snake_case key so the template
               {{operation_name}} is populated correctly
@@ -19,7 +19,8 @@ from unittest.mock import MagicMock, PropertyMock, patch
 from . import context  # noqa: F401
 
 from graphql_server.flask.views import GraphQLView
-from grapinator.app import app, apply_custom_response, FixedGraphQLView
+from grapinator.app import app, FixedGraphQLView
+from grapinator.svc_cherrypy import SecurityHeadersMiddleware, CorsMiddleware
 from grapinator import settings
 
 
@@ -33,52 +34,106 @@ def _make_response(status=200, body='ok'):
         return make_response(body, status)
 
 
-class TestApplyCustomResponse(unittest.TestCase):
-    """apply_custom_response must set all required security headers."""
+class TestSecurityHeadersMiddleware(unittest.TestCase):
+    """SecurityHeadersMiddleware must inject all required security headers
+    and strip the Server header on every response."""
 
     def setUp(self):
-        self.response = _make_response()
-        with app.test_request_context('/'):
-            self.response = apply_custom_response(self.response)
+        """Run a real request through the middleware and capture headers."""
+        self.captured_headers = {}
+
+        def fake_app(environ, start_response):
+            start_response('200 OK', [('Content-Type', 'text/plain'),
+                                      ('Server', 'Werkzeug/3.0')])
+            return [b'ok']
+
+        middleware = SecurityHeadersMiddleware(fake_app)
+
+        def capturing_start_response(status, headers, exc_info=None):
+            self.captured_headers = dict(headers)
+
+        environ = {'REQUEST_METHOD': 'GET', 'PATH_INFO': '/'}
+        list(middleware(environ, capturing_start_response))
 
     def test_x_frame_options_header_present(self):
-        self.assertIn('X-Frame-Options', self.response.headers)
+        self.assertIn('X-Frame-Options', self.captured_headers)
 
     def test_x_frame_options_value_matches_settings(self):
         self.assertEqual(
-            self.response.headers['X-Frame-Options'],
+            self.captured_headers['X-Frame-Options'],
             settings.HTTP_HEADERS_XFRAME,
         )
 
     def test_xss_protection_header_present(self):
-        self.assertIn('X-XSS-Protection', self.response.headers)
+        self.assertIn('X-XSS-Protection', self.captured_headers)
 
     def test_xss_protection_value_matches_settings(self):
         self.assertEqual(
-            self.response.headers['X-XSS-Protection'],
+            self.captured_headers['X-XSS-Protection'],
             settings.HTTP_HEADERS_XSS_PROTECTION,
         )
 
     def test_cache_control_header_present(self):
-        self.assertIn('Cache-Control', self.response.headers)
+        self.assertIn('Cache-Control', self.captured_headers)
 
     def test_cache_control_value_matches_settings(self):
         self.assertEqual(
-            self.response.headers['Cache-Control'],
+            self.captured_headers['Cache-Control'],
             settings.HTTP_HEADER_CACHE_CONTROL,
         )
 
-    def test_access_control_allow_headers_present(self):
-        self.assertIn('Access-Control-Allow-Headers', self.response.headers)
+    def test_server_header_stripped(self):
+        self.assertNotIn('Server', self.captured_headers)
 
-    def test_access_control_allow_headers_value_matches_settings(self):
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddleware(unittest.TestCase):
+    """CorsMiddleware must inject CORS headers and handle OPTIONS preflight."""
+
+    def _run(self, method='GET'):
+        """Run a request through the middleware and return captured headers."""
+        captured = {}
+
+        def fake_app(environ, start_response):
+            start_response('200 OK', [('Content-Type', 'text/plain')])
+            return [b'ok']
+
+        middleware = CorsMiddleware(fake_app)
+
+        def capturing_start_response(status, headers, exc_info=None):
+            captured['status'] = status
+            captured['headers'] = dict(headers)
+
+        environ = {'REQUEST_METHOD': method, 'PATH_INFO': '/'}
+        captured['body'] = b''.join(middleware(environ, capturing_start_response))
+        return captured
+
+    def test_allow_origin_header_present(self):
+        self.assertIn('Access-Control-Allow-Origin', self._run()['headers'])
+
+    def test_allow_methods_header_present(self):
+        self.assertIn('Access-Control-Allow-Methods', self._run()['headers'])
+
+    def test_allow_headers_value_matches_settings(self):
         self.assertEqual(
-            self.response.headers['Access-Control-Allow-Headers'],
+            self._run()['headers']['Access-Control-Allow-Headers'],
             settings.CORS_ALLOW_HEADERS,
         )
 
-    def test_original_response_body_preserved(self):
-        self.assertEqual(self.response.get_data(as_text=True), 'ok')
+    def test_preflight_returns_200(self):
+        result = self._run(method='OPTIONS')
+        self.assertEqual(result['status'], '200 OK')
+
+    def test_preflight_has_cors_headers(self):
+        headers = self._run(method='OPTIONS')['headers']
+        self.assertIn('Access-Control-Allow-Origin', headers)
+        self.assertIn('Access-Control-Allow-Methods', headers)
+
+    def test_preflight_returns_empty_body(self):
+        self.assertEqual(self._run(method='OPTIONS')['body'], b'')
 
 
 # ---------------------------------------------------------------------------
