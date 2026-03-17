@@ -40,22 +40,22 @@ python -m venv venv
 source venv/bin/activate
 (venv) $ export $(cat .env)
 (venv) $ pip install -e .
-(venv) $ cd grapinator;python app.py
+(venv) $ pip install -e ".[dev]"
+(venv) $ python grapinator/app.py
 ```
 
 #### Setup using conda
 ```
 conda create -n grapinator python
 conda activate grapinator
-(grapinator) $ conda install cx_Oracle
 (grapinator) $ export $(cat .env)
 (grapinator) $ pip install -e .
-(grapinator) $ cd grapinator;python app.py
+(grapinator) $ pip install -e ".[dev]"
+(grapinator) $ python grapinator/app.py
 ```
 
 #### Running unit tests from the command line
 Unit tests are located in the 'tests' directory.
-Integration tests are located in the 'tests_integration' directory.
 ```
-python -m unittest [filename]
+GQLAPI_CRYPT_KEY=testkey python -m unittest discover -s tests -t . -v
 ```

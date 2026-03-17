@@ -1,0 +1,17 @@
+[
+  {
+    "name": "local",
+    "url": "http://localhost:8443/northwind/gql",
+    "description": "Local development server"
+  },
+  {
+    "name": "staging", 
+    "url": "https://api-staging.example.com/northwind/gql",
+    "description": "Staging environment"
+  },
+  {
+    "name": "production",
+    "url": "https://api.example.com/northwind/gql", 
+    "description": "Production environment"
+  }
+]

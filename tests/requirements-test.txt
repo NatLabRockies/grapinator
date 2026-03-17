@@ -1,0 +1,4 @@
+# Test dependencies for GraphQL integration testing
+requests>=2.28.0
+deepdiff>=6.0.0
+PyYAML>=6.0
