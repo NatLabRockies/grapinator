@@ -87,53 +87,197 @@ class TestSecurityHeadersMiddleware(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# CorsMiddleware
+# CorsMiddleware — helpers
 # ---------------------------------------------------------------------------
 
-class TestCorsMiddleware(unittest.TestCase):
-    """CorsMiddleware must inject CORS headers and handle OPTIONS preflight."""
-
-    def _run(self, method='GET'):
-        """Run a request through the middleware and return captured headers."""
-        captured = {}
-
+def _cors_run(method='GET', path='/', fake_app=None, **setting_overrides):
+    """Create CorsMiddleware and run one request, both inside any setting
+    overrides so init-time and call-time settings are consistently patched."""
+    if fake_app is None:
         def fake_app(environ, start_response):
             start_response('200 OK', [('Content-Type', 'text/plain')])
             return [b'ok']
 
+    captured = {}
+
+    def capturing_start_response(status, headers, exc_info=None):
+        captured['status'] = status
+        captured['headers'] = dict(headers)
+
+    environ = {'REQUEST_METHOD': method, 'PATH_INFO': path}
+
+    if setting_overrides:
+        with patch.multiple(settings, **setting_overrides):
+            middleware = CorsMiddleware(fake_app)
+            captured['body'] = b''.join(middleware(environ, capturing_start_response))
+    else:
         middleware = CorsMiddleware(fake_app)
-
-        def capturing_start_response(status, headers, exc_info=None):
-            captured['status'] = status
-            captured['headers'] = dict(headers)
-
-        environ = {'REQUEST_METHOD': method, 'PATH_INFO': '/'}
         captured['body'] = b''.join(middleware(environ, capturing_start_response))
-        return captured
+
+    return captured
+
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware — normal (non-preflight) requests
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddlewareNormalRequest(unittest.TestCase):
+    """CORS headers must be present on every non-OPTIONS response."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = _cors_run()
+        cls.headers = cls.result['headers']
 
     def test_allow_origin_header_present(self):
-        self.assertIn('Access-Control-Allow-Origin', self._run()['headers'])
+        self.assertIn('Access-Control-Allow-Origin', self.headers)
 
     def test_allow_methods_header_present(self):
-        self.assertIn('Access-Control-Allow-Methods', self._run()['headers'])
+        self.assertIn('Access-Control-Allow-Methods', self.headers)
+
+    def test_allow_methods_value_matches_settings(self):
+        self.assertEqual(self.headers['Access-Control-Allow-Methods'],
+                         settings.CORS_ALLOW_METHODS)
+
+    def test_allow_headers_header_present(self):
+        self.assertIn('Access-Control-Allow-Headers', self.headers)
 
     def test_allow_headers_value_matches_settings(self):
-        self.assertEqual(
-            self._run()['headers']['Access-Control-Allow-Headers'],
-            settings.CORS_ALLOW_HEADERS,
-        )
+        self.assertEqual(self.headers['Access-Control-Allow-Headers'],
+                         settings.CORS_ALLOW_HEADERS)
 
-    def test_preflight_returns_200(self):
-        result = self._run(method='OPTIONS')
-        self.assertEqual(result['status'], '200 OK')
+    def test_expose_headers_header_present(self):
+        self.assertIn('Access-Control-Expose-Headers', self.headers)
 
-    def test_preflight_has_cors_headers(self):
-        headers = self._run(method='OPTIONS')['headers']
-        self.assertIn('Access-Control-Allow-Origin', headers)
-        self.assertIn('Access-Control-Allow-Methods', headers)
+    def test_expose_headers_value_matches_settings(self):
+        self.assertEqual(self.headers['Access-Control-Expose-Headers'],
+                         settings.CORS_EXPOSE_HEADERS)
 
-    def test_preflight_returns_empty_body(self):
-        self.assertEqual(self._run(method='OPTIONS')['body'], b'')
+    def test_max_age_header_present(self):
+        self.assertIn('Access-Control-Max-Age', self.headers)
+
+    def test_max_age_value_matches_settings(self):
+        self.assertEqual(self.headers['Access-Control-Max-Age'],
+                         str(settings.CORS_HEADER_MAX_AGE))
+
+    def test_response_body_is_preserved(self):
+        self.assertEqual(self.result['body'], b'ok')
+
+    def test_response_status_is_preserved(self):
+        self.assertEqual(self.result['status'], '200 OK')
+
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware — wildcard vs specific origin
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddlewareOrigin(unittest.TestCase):
+    """Access-Control-Allow-Origin must reflect CORS_SEND_WILDCARD."""
+
+    def test_wildcard_when_send_wildcard_true(self):
+        headers = _cors_run(CORS_SEND_WILDCARD=True,
+                            CORS_EXPOSE_ORIGINS='https://example.com')['headers']
+        self.assertEqual(headers['Access-Control-Allow-Origin'], '*')
+
+    def test_specific_origin_when_send_wildcard_false(self):
+        headers = _cors_run(CORS_SEND_WILDCARD=False,
+                            CORS_EXPOSE_ORIGINS='https://example.com')['headers']
+        self.assertEqual(headers['Access-Control-Allow-Origin'],
+                         'https://example.com')
+
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware — credentials
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddlewareCredentials(unittest.TestCase):
+    """Access-Control-Allow-Credentials must only appear when enabled."""
+
+    def test_credentials_header_present_when_enabled(self):
+        headers = _cors_run(CORS_SUPPORTS_CREDENTIALS=True)['headers']
+        self.assertIn('Access-Control-Allow-Credentials', headers)
+        self.assertEqual(headers['Access-Control-Allow-Credentials'], 'true')
+
+    def test_credentials_header_absent_when_disabled(self):
+        headers = _cors_run(CORS_SUPPORTS_CREDENTIALS=False)['headers']
+        self.assertNotIn('Access-Control-Allow-Credentials', headers)
+
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware — CORS_ENABLE = False
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddlewareDisabled(unittest.TestCase):
+    """When CORS_ENABLE is False the middleware must be transparent."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.headers = _cors_run(CORS_ENABLE=False)['headers']
+
+    def test_allow_origin_absent(self):
+        self.assertNotIn('Access-Control-Allow-Origin', self.headers)
+
+    def test_allow_methods_absent(self):
+        self.assertNotIn('Access-Control-Allow-Methods', self.headers)
+
+    def test_allow_headers_absent(self):
+        self.assertNotIn('Access-Control-Allow-Headers', self.headers)
+
+    def test_underlying_content_type_still_present(self):
+        self.assertIn('Content-Type', self.headers)
+
+
+# ---------------------------------------------------------------------------
+# CorsMiddleware — OPTIONS preflight
+# ---------------------------------------------------------------------------
+
+class TestCorsMiddlewarePreflight(unittest.TestCase):
+    """OPTIONS preflight must return 200 with CORS headers and an empty body."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = _cors_run(method='OPTIONS')
+        cls.headers = cls.result['headers']
+
+    def test_status_is_200(self):
+        self.assertEqual(self.result['status'], '200 OK')
+
+    def test_body_is_empty(self):
+        self.assertEqual(self.result['body'], b'')
+
+    def test_allow_origin_present(self):
+        self.assertIn('Access-Control-Allow-Origin', self.headers)
+
+    def test_allow_methods_present(self):
+        self.assertIn('Access-Control-Allow-Methods', self.headers)
+
+    def test_allow_headers_present(self):
+        self.assertIn('Access-Control-Allow-Headers', self.headers)
+
+    def test_max_age_present(self):
+        self.assertIn('Access-Control-Max-Age', self.headers)
+
+    def test_allow_methods_value(self):
+        self.assertEqual(self.headers['Access-Control-Allow-Methods'],
+                         settings.CORS_ALLOW_METHODS)
+
+    def test_allow_headers_value(self):
+        self.assertEqual(self.headers['Access-Control-Allow-Headers'],
+                         settings.CORS_ALLOW_HEADERS)
+
+    def test_preflight_disabled_when_cors_off(self):
+        """With CORS_ENABLE=False, OPTIONS must pass through to the app."""
+        app_called = []
+
+        def fake_app(environ, start_response):
+            app_called.append(True)
+            start_response('405 Method Not Allowed', [])
+            return [b'']
+
+        result = _cors_run(method='OPTIONS', fake_app=fake_app, CORS_ENABLE=False)
+        self.assertTrue(app_called,
+                        'Underlying app should be called when CORS is disabled')
+        self.assertEqual(result['status'], '405 Method Not Allowed')
 
 
 # ---------------------------------------------------------------------------
