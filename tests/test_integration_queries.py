@@ -556,7 +556,10 @@ class IntegrationTestSuite:
         
         # Primary endpoint stats
         primary_success_count = sum(1 for r in self.primary_results.values() if r.success)
-        primary_avg_time = sum(r.response_time_ms for r in self.primary_results.values()) / len(self.primary_results)
+        primary_avg_time = (
+            sum(r.response_time_ms for r in self.primary_results.values()) / len(self.primary_results)
+            if self.primary_results else 0.0
+        )
         
         # Validation stats
         validation_pass_count = sum(1 for v in self.validation_results.values() if v.passed)
@@ -572,12 +575,18 @@ class IntegrationTestSuite:
                 'total_execution_time': total_time,
                 'primary_endpoint': self.primary_client.endpoint,
                 'primary_success_count': primary_success_count,
-                'primary_success_rate': primary_success_count / len(self.primary_results) * 100,
+                'primary_success_rate': (
+                    primary_success_count / len(self.primary_results) * 100
+                    if self.primary_results else 0.0
+                ),
                 'primary_avg_response_time_ms': primary_avg_time
             },
             'validation_summary': {
                 'validation_pass_count': validation_pass_count,
-                'validation_pass_rate': validation_pass_count / len(self.validation_results) * 100,
+                'validation_pass_rate': (
+                    validation_pass_count / len(self.validation_results) * 100
+                    if self.validation_results else 0.0
+                ),
                 'failed_validations': [
                     {
                         'query': name,
@@ -596,12 +605,18 @@ class IntegrationTestSuite:
         # Add secondary endpoint data if available
         if self.secondary_client:
             secondary_success_count = sum(1 for r in self.secondary_results.values() if r.success)
-            secondary_avg_time = sum(r.response_time_ms for r in self.secondary_results.values()) / len(self.secondary_results)
+            secondary_avg_time = (
+                sum(r.response_time_ms for r in self.secondary_results.values()) / len(self.secondary_results)
+                if self.secondary_results else 0.0
+            )
             
             summary['execution_summary'].update({
                 'secondary_endpoint': self.secondary_client.endpoint,
                 'secondary_success_count': secondary_success_count,
-                'secondary_success_rate': secondary_success_count / len(self.secondary_results) * 100,
+                'secondary_success_rate': (
+                    secondary_success_count / len(self.secondary_results) * 100
+                    if self.secondary_results else 0.0
+                ),
                 'secondary_avg_response_time_ms': secondary_avg_time
             })
             
