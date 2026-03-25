@@ -62,7 +62,10 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
             # they cannot be queried or introspected by clients.
             exclude_fields += (attr['name'],)
         else:
-            include_fields[attr['name']] = attr['type'](attr['type_args'], description=attr['desc'])
+            field_kwargs = {'description': attr['desc']}
+            if attr.get('deprecation_reason'):
+                field_kwargs['deprecation_reason'] = attr['deprecation_reason']
+            include_fields[attr['name']] = attr['type'](attr['type_args'], **field_kwargs)
 
     gql_attrs = {
         # Meta inner class binds this Graphene type to its SQLAlchemy model
@@ -248,7 +251,10 @@ def _make_gql_query_fields(cols):
         # marked gql_isqueryable=False (e.g. relationship navigation fields)
         # because they cannot be used as SQL filter predicates.
         if row['isqueryable'] and row['ishidden'] is False and row['isresolver'] is False:
-            gql_attrs[row['name']] = row['type'](row['type_args'] if row['type_args'] else None)
+            extra_kwargs = {}
+            if row.get('deprecation_reason'):
+                extra_kwargs['deprecation_reason'] = row['deprecation_reason']
+            gql_attrs[row['name']] = row['type'](row['type_args'] if row['type_args'] else None, **extra_kwargs)
     # Append the standard modifier arguments supported by MyConnectionField.
     gql_attrs.update({
         'matches': graphene.String()
