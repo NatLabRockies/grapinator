@@ -17,6 +17,7 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
     - **gql_col_name:** GraphQL column name
     - **gql_type:** Graphene type
     - **gql_description:** Description string for the GraphiQL web browser
+    - **gql_deprecation_reason:** *(Optional)* Marks the field as deprecated in the GraphQL schema. The string value is displayed in GraphiQL's schema explorer as the reason for deprecation. Deprecated fields are hidden in GraphiQL by default but remain fully queryable. Omit this key (or set it to `None`) for non-deprecated fields.
     - **db_col_name:** Database column name.  
     - **db_type:** SQLAlchemy database type
 - **RELATIONSHIPS:** List of dictionaries containing SQLAlchemy class model [relationships](https://docs.sqlalchemy.org/en/13/orm/relationship_api.html#sqlalchemy.orm.relationship)
@@ -355,7 +356,29 @@ Below is the complete schema from the actual file with detailed annotations expl
 **Field Types:**
 - **Queryable fields**: Regular database columns that can be used in filters and sorting
 - **Relationship fields**: Marked with `'gql_isqueryable': False` - used for navigation only
+- **Deprecated fields**: Marked with `'gql_deprecation_reason': '<reason text>'` - still queryable but surfaced as deprecated in GraphiQL
 - **Type mapping**: GraphQL types (Int, String, DateTime, Float) map to SQLAlchemy types (Integer, String, Date, Numeric)
+
+**Deprecating a Field:**
+
+Add the optional `gql_deprecation_reason` key to any field you want to retire without removing it from the API. GraphiQL will hide the field by default and display the reason text when "Show Deprecated Fields" is toggled on.
+
+```python
+{
+    'gql_col_name': 'model',
+    'gql_type': graphene.String,
+    'gql_deprecation_reason': 'Deprecated. Use model_number instead.',  # optional
+    'db_col_name': 'MODEL',
+    'db_type': String
+},
+{
+    'gql_col_name': 'model_number',
+    'gql_type': graphene.String,
+    'gql_description': 'Manufacturer model number.',
+    'db_col_name': 'MODEL_NUMBER',
+    'db_type': String
+},
+```
 
 **Relationships:**
 - Use SQLAlchemy relationship syntax for defining table joins
