@@ -373,7 +373,10 @@ class SchemaSettings(object):
             gql_class_cols = [{
                 'name':r['gql_col_name']
                 ,'type':r['gql_type']
-                ,'desc':r['gql_description']
+                # check if field gql_description is present and non-empty; if so, use it, otherwise set to None
+                ,'desc':r['gql_description'] if 'gql_description' in r and r['gql_description'] else None
+                # check if field gql_deprecation_reason is present and non-empty; if so, use it, otherwise set to None
+                ,'deprecation_reason': r['gql_deprecation_reason'] if 'gql_deprecation_reason' in r and r['gql_deprecation_reason'] else None   
                 ,'type_args': r['gql_of_type'] if 'gql_of_type' in r else None
                 ,'isqueryable': r['gql_isqueryable'] if 'gql_isqueryable' in r else True
                 ,'ishidden': r['gql_ishidden'] if 'gql_ishidden' in r else False

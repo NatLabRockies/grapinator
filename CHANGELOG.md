@@ -2,6 +2,30 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.0.2] - 2026-03-25
+
+### New Features
+
+#### GraphQL Field Deprecation Support (Issue #13)
+- **Added `gql_deprecation_reason` field key** to the schema dictionary format — marks a GraphQL field as deprecated with a human-readable reason string
+- Deprecated fields surface in GraphiQL's schema explorer with the reason text displayed; they are hidden by default but remain fully queryable
+- `gql_deprecation_reason` is optional — fields without it continue to behave as before
+
+#### Schema Changes
+- **Deprecated `model` field** on the `Asset` type with message *"Deprecated. Use model_number instead."*
+
+### Bug Fixes
+- **Fixed `deprecation_reason` not being applied** to generated Graphene fields — the reason must be passed to the field constructor, not assigned as a post-construction attribute
+- **Fixed key name mismatch** between `settings.py` (which stores the key as `deprecation_reason`) and `schema.py` (which was incorrectly looking up `gql_deprecation_reason`)
+- **Fixed `_make_gql_query_fields`** to correctly scope field construction inside the `isqueryable` guard, preventing hidden/non-queryable fields from being added as filter arguments
+
+### Tests
+- **Added `test_deprecation_reason_parsed`** in `test_schema_settings.py` — verifies that `SchemaSettings` correctly parses `gql_deprecation_reason` from the schema dict into the column descriptor
+- **Added `test_gql_deprecation_reason_on_fields`** in `test_gql_class_creation.py` — verifies that the mounted Graphene field on each generated type carries the expected `deprecation_reason` value
+
+### Documentation
+- **Updated `docs/schema_docs.md`** with full documentation for `gql_deprecation_reason` including field reference entry, a "Deprecated fields" bullet in key patterns, and an annotated code example
+
 ## [2.0.1] - 2026-03-12
 
 ### Bug Fixes

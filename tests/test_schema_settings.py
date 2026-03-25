@@ -28,3 +28,17 @@ class TestStringMethods(unittest.TestCase):
             self.assertTrue('gql_db_default_sort_col' in r, "test_get_gql_classes: failed for gql_db_default_sort_col!")
             self.assertTrue('gql_columns' in r, "test_get_gql_classes: failed for gql_columns!")
             self.assertTrue(len(r['gql_columns']) > 0, "test_get_gql_classes: failed for gql_columns size!")
+
+    def test_deprecation_reason_parsed(self):
+        """Columns with gql_deprecation_reason in the schema dict must have
+        deprecation_reason set to a non-empty string in the parsed descriptor.
+        Columns without it must have deprecation_reason as None."""
+        for cls in self.sb.get_gql_classes():
+            for col in cls['gql_columns']:
+                self.assertIn('deprecation_reason', col,
+                    f"{cls['gql_class']}.{col['name']}: deprecation_reason key missing from descriptor")
+                if col['deprecation_reason'] is not None:
+                    self.assertIsInstance(col['deprecation_reason'], str,
+                        f"{cls['gql_class']}.{col['name']}: deprecation_reason must be a string")
+                    self.assertTrue(len(col['deprecation_reason']) > 0,
+                        f"{cls['gql_class']}.{col['name']}: deprecation_reason must not be empty")
