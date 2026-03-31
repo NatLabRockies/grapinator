@@ -91,31 +91,46 @@ class QueryParser:
         
         content = self.markdown_file.read_text()
         
-        # Pattern to match query blocks with names - more flexible approach
-        pattern = r'### (\d+)\.\s+(.+?)\n.*?```graphql\n(.*?)\n```'
-        matches = re.findall(pattern, content, re.DOTALL)
-        
-        for match in matches:
+        # Pattern to match numbered headers: ### 1. Title
+        numbered_pattern = r'### (\d+)\.\s+(.+?)\n.*?```graphql\n(.*?)\n```'
+        # Pattern to match unnumbered headers: ### Title
+        unnumbered_pattern = r'### (?!\d+\.)(.+?)\n[^`]*?```graphql\n(.*?)\n```'
+
+        numbered_matches = re.findall(numbered_pattern, content, re.DOTALL)
+
+        for match in numbered_matches:
             query_number, description, query_content = match
-            
-            # Clean up and validate the query content
             query_content = query_content.strip()
-            
-            # Extract query name from the query content
             query_name_match = re.search(r'query\s+(\w+)', query_content)
             if not query_name_match:
                 logger.warning(f"Could not extract query name from query {query_number}")
                 continue
-                
             query_name = query_name_match.group(1)
-            
             self.queries[query_name] = {
                 'number': int(query_number),
                 'description': description.strip(),
                 'name': query_name,
                 'query': query_content
             }
-        
+
+        if not self.queries:
+            # Fall back to unnumbered header format
+            unnumbered_matches = re.findall(unnumbered_pattern, content, re.DOTALL)
+            for i, match in enumerate(unnumbered_matches, start=1):
+                description, query_content = match
+                query_content = query_content.strip()
+                query_name_match = re.search(r'query\s+(\w+)', query_content)
+                if not query_name_match:
+                    logger.warning(f"Could not extract query name from section: {description.strip()[:50]}")
+                    continue
+                query_name = query_name_match.group(1)
+                self.queries[query_name] = {
+                    'number': i,
+                    'description': description.strip(),
+                    'name': query_name,
+                    'query': query_content
+                }
+
         logger.info(f"Parsed {len(self.queries)} queries from {self.markdown_file}")
 
 
