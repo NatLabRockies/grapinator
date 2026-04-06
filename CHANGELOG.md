@@ -2,6 +2,75 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.1.0] - 2026-04-06
+
+### New Features
+
+#### JWT Bearer Token Authentication & RBAC (Issue #17)
+
+**IdP-agnostic JWT middleware** — validates bearer tokens against any OIDC-compatible
+identity provider (Azure Entra ID, Keycloak, Auth0, …) using standard JWKS / RFC 7519
+parameters.  No provider-specific logic lives in the codebase — all IdP specifics are
+externalized to `grapinator.ini`.
+
+- **Three auth modes** controlled by `AUTH_MODE` in a new `[AUTH]` ini section:
+  - `off` *(default)* — zero behaviour change; existing deployments completely unaffected
+  - `mixed` — unauthenticated requests reach public data; role-restricted fields/entities
+    gate on the caller's JWT roles; an invalid token always returns 401
+  - `required` — every request must carry a valid bearer token (except CORS preflight
+    and, optionally, the GraphiQL IDE page)
+- **Entity-level access control** via `AUTH_ROLES: ['role1', ...]` on any schema.dct
+  entity — callers without a matching role receive an empty result set (not a 401)
+- **Field-level access control** via `gql_auth_roles: ['role1', ...]` on any field —
+  callers without a matching role receive `null`; the field remains introspectable
+- **Dotted-path roles claim** — `AUTH_ROLES_CLAIM` supports nested JWT claims such as
+  `realm_access.roles` (Keycloak) in addition to flat claims like `roles` (Entra ID)
+- **GraphiQL access control** via `GRAPHIQL_ACCESS`: `authenticated` (default), `open`
+  (IDE served without auth), or `off` (IDE disabled entirely)
+- **Local dev JWT generator** — `tools/dev_jwt.py` generates HS256 tokens signed with
+  `AUTH_DEV_SECRET` for testing without a live IdP; supports `--roles`, `--claim`,
+  `--expiry`, `--print-header`
+
+### New Files
+- **`grapinator/auth.py`** — `BearerAuthMiddleware` WSGI middleware
+- **`tools/dev_jwt.py`** — Local development JWT generator
+
+### Modified Files
+- **`grapinator/settings.py`** — `AUTH_*` attributes with safe defaults; optional
+  `[AUTH]` INI section loading; `_make_gql_classes()` propagates `gql_auth_roles`
+  and `AUTH_ROLES` from schema.dct
+- **`grapinator/schema.py`** — Field-level auth resolver wrapper in
+  `gql_class_constructor`; entity-level `query.filter(sql_false())` gate in
+  `MyConnectionField.get_query`; `_ENTITY_AUTH_ROLES` module-level registry
+- **`grapinator/app.py`** — `@before_request` threads WSGI auth state into Flask `g`;
+  `context_value=_get_graphql_context` exposes `user_roles` to resolvers
+- **`grapinator/svc_cherrypy.py`** — `BearerAuthMiddleware` inserted inside
+  `CorsMiddleware` when `AUTH_MODE != 'off'`
+- **`grapinator/resources/grapinator.ini`** — Added `[AUTH]` section (`AUTH_MODE = off`
+  default; all production settings commented out with IdP examples)
+- **`setup.cfg`** — Added `PyJWT[crypto]>=2.8.0` to `install_requires`
+
+### Tests
+- **Added `tests/test_bearer_auth.py`** — 70 new tests:
+  - Middleware: all three modes, all token scenarios (valid, expired, wrong secret,
+    malformed), CORS preflight bypass, GraphiQL access control (`open`/`authenticated`)
+  - RSA/JWKS code path via self-generated key pair (no network calls)
+  - Field-level RBAC: matching role returns value; missing role returns `null`;
+    multi-role OR logic; public fields have no injected resolver
+  - Entity-level RBAC: matching role runs query normally; missing role applies
+    `filter(false())`; no `AUTH_ROLES` key means public
+  - Dev JWT tool: token generation, nested claim paths, expiry enforcement,
+    end-to-end validation through middleware
+  - Settings defaults: all `AUTH_*` attributes verified
+
+### Documentation
+- **`docs/grapinator_ini.md`** — Full `[AUTH]` section reference: all settings,
+  provider-specific examples (Azure Entra ID, Keycloak, Auth0), CORS note,
+  local dev workflow with `dev_jwt.py` usage examples
+- **`docs/schema_docs.md`** — Added `AUTH_ROLES` and `gql_auth_roles` to dictionary
+  element reference; new **RBAC** section with entity-level/field-level/combined
+  examples, role naming guide per provider, and a behaviour matrix table
+
 ## [2.0.2] - 2026-03-25
 
 ### New Features
