@@ -13,11 +13,19 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
 - **DB_TABLE_NAME:** The name of the table in the database
 - **DB_TABLE_PK:** The column name of the primary key used by the database
 - **DB_DEFAULT_SORT_COL:** Default sort column
+- **AUTH_ROLES:** *(Optional)* Entity-level role gate — list of role strings required to query
+  this entity at all.  Callers whose roles do not intersect this list receive an empty result
+  set (not a 401).  Omit or set to `None` / `[]` for public entities (no restriction).
+  See [RBAC — Role-based access control](#rbac--role-based-access-control) for full details.
 - **FIELDS:** List of dictionaries defining each column to expose
     - **gql_col_name:** GraphQL column name
     - **gql_type:** Graphene type
     - **gql_description:** Description string for the GraphiQL web browser
     - **gql_deprecation_reason:** *(Optional)* Marks the field as deprecated in the GraphQL schema. The string value is displayed in GraphiQL's schema explorer as the reason for deprecation. Deprecated fields are hidden in GraphiQL by default but remain fully queryable. Omit this key (or set it to `None`) for non-deprecated fields.
+    - **gql_auth_roles:** *(Optional)* Field-level role gate — list of role strings required to
+      read this field.  Callers without a matching role receive `null` for this field; they can
+      still query and see the field in the schema (introspection is unrestricted).  Omit or set
+      to `None` / `[]` for public fields (no restriction).
     - **db_col_name:** Database column name.  
     - **db_type:** SQLAlchemy database type
 - **RELATIONSHIPS:** List of dictionaries containing SQLAlchemy class model [relationships](https://docs.sqlalchemy.org/en/13/orm/relationship_api.html#sqlalchemy.orm.relationship)
@@ -387,4 +395,190 @@ Add the optional `gql_deprecation_reason` key to any field you want to retire wi
 - `uselist: True` indicates one-to-many relationships (returns lists)
 
 This schema enables grapinator to automatically generate a fully functional GraphQL API with proper relationships, type safety, and query capabilities.
+
+
+---
+
+## RBAC — Role-based access control
+
+Grapinator supports two granularities of role-based access control, both declared inline in
+`schema.dct`.  Auth is **off by default** — omitting both keys leaves everything public and
+fully backward compatible.
+
+Auth mode must be enabled in `grapinator.ini` for RBAC to take effect.  With `AUTH_MODE = off`
+(the default), all RBAC declarations are silently ignored and every caller receives the full
+data set.  See [grapinator_ini.md](grapinator_ini.md) for configuration details.
+
+### Entity-level access: `AUTH_ROLES`
+
+`AUTH_ROLES` is a top-level key on the entity dictionary.  It gates access to the **entire
+entity** (all rows).  Callers whose JWT roles do not intersect the list receive an empty result
+set — not a 401.  This keeps the API contract consistent and prevents information leakage about
+whether the entity even exists.
+
+```python
+{
+    'GQL_CLASS_NAME': 'SalaryBands',
+    'GQL_CONN_QUERY_NAME': 'salary_bands',
+    'DB_CLASS_NAME': 'db_SalaryBands',
+    'DB_TABLE_NAME': 'SalaryBands',
+    'DB_TABLE_PK': 'BandID',
+    'DB_DEFAULT_SORT_COL': 'BandID',
+    # Only callers with the 'hr' OR 'finance' role see any rows.
+    # All other callers get an empty result set.
+    'AUTH_ROLES': ['hr', 'finance'],
+    'FIELDS': [ ... ],
+    'RELATIONSHIPS': [],
+}
 ```
+
+- A list means "any one of these roles is sufficient" (logical OR).
+- An empty list `[]` or absent key means no restriction (public).
+
+### Field-level access: `gql_auth_roles`
+
+`gql_auth_roles` is an optional key inside a field descriptor.  It gates access to a **single
+field**.  The entity query itself is allowed for all callers; only the protected field returns
+`null` for callers who lack the required role.  Auth-restricted fields are still fully
+introspectable — they appear in the schema but resolve to `null` for unauthorised callers.
+
+```python
+'FIELDS': [
+    {
+        'gql_col_name': 'salary',
+        'gql_type': graphene.Float,
+        'gql_description': 'Employee salary — HR and finance only.',
+        'db_col_name': 'Salary',
+        'db_type': Float,
+        # Only callers with the 'hr' OR 'finance' role receive the real value.
+        # All other callers receive null for this field.
+        'gql_auth_roles': ['hr', 'finance'],
+    },
+    {
+        'gql_col_name': 'first_name',
+        'gql_type': graphene.String,
+        'gql_description': 'Employee first name.',
+        'db_col_name': 'FirstName',
+        'db_type': String,
+        # No gql_auth_roles key -> public field, no restriction.
+    },
+]
+```
+
+### Combining both levels
+
+You can stack `AUTH_ROLES` and `gql_auth_roles` on the same entity.  For example: the entity
+is visible to all authenticated users (`AUTH_ROLES` absent), but the `salary` field within it
+is restricted to HR (`gql_auth_roles: ['hr']`).
+
+### Role name conventions
+
+Role names are arbitrary strings.  They must match the values in the JWT roles claim exactly
+(case-sensitive).  The roles claim name and its location inside the token are controlled by
+`AUTH_ROLES_CLAIM` in `grapinator.ini` (default: `roles`).
+
+#### Azure Entra ID
+
+Define App Roles in your App Registration with the desired `Value` strings (e.g. `hr`,
+`finance`).  An Entra ID admin assigns users or groups to each role.  The token's `roles`
+claim will contain the `Value` strings — so those values must match what you put in
+`gql_auth_roles` / `AUTH_ROLES`.  You (the App Owner) define the role names; only the
+assignment of people to roles requires an admin.
+
+#### Keycloak
+
+Roles are defined in the Realm and assigned to users or groups.  With
+`AUTH_ROLES_CLAIM = realm_access.roles`, the claim inside the token is a list of realm-role
+names.
+
+#### Auth0
+
+Use Actions or Rules to embed a custom claim (e.g. `https://grapinator/roles`) containing a
+list of role names, then set `AUTH_ROLES_CLAIM = https://grapinator/roles`.
+
+### Complete example — mixed public and restricted data
+
+```python
+[
+    # PUBLIC entity — no AUTH_ROLES, no field-level restrictions
+    {
+        'GQL_CLASS_NAME': 'Products',
+        'GQL_CONN_QUERY_NAME': 'products',
+        'DB_CLASS_NAME': 'db_Products',
+        'DB_TABLE_NAME': 'Products',
+        'DB_TABLE_PK': 'ProductID',
+        'DB_DEFAULT_SORT_COL': 'ProductID',
+        # No AUTH_ROLES key -> public, no token required in mixed mode
+        'FIELDS': [
+            {
+                'gql_col_name': 'product_id',
+                'gql_type': graphene.Int,
+                'gql_description': 'PK.',
+                'db_col_name': 'ProductID',
+                'db_type': Integer,
+            },
+            {
+                'gql_col_name': 'product_name',
+                'gql_type': graphene.String,
+                'gql_description': 'Name.',
+                'db_col_name': 'ProductName',
+                'db_type': String,
+            },
+            {
+                # Cost price is visible only to buyers and managers
+                'gql_col_name': 'unit_cost',
+                'gql_type': graphene.Float,
+                'gql_description': 'Cost price (buyers/managers only).',
+                'db_col_name': 'UnitCost',
+                'db_type': Float,
+                'gql_auth_roles': ['buyer', 'manager'],
+            },
+        ],
+        'RELATIONSHIPS': [],
+    },
+
+    # RESTRICTED entity — only hr role can query this table at all
+    {
+        'GQL_CLASS_NAME': 'EmployeeSalaries',
+        'GQL_CONN_QUERY_NAME': 'employee_salaries',
+        'DB_CLASS_NAME': 'db_EmployeeSalaries',
+        'DB_TABLE_NAME': 'EmployeeSalaries',
+        'DB_TABLE_PK': 'SalaryID',
+        'DB_DEFAULT_SORT_COL': 'SalaryID',
+        'AUTH_ROLES': ['hr'],   # entity-level gate
+        'FIELDS': [
+            {
+                'gql_col_name': 'salary_id',
+                'gql_type': graphene.Int,
+                'gql_description': 'PK.',
+                'db_col_name': 'SalaryID',
+                'db_type': Integer,
+            },
+            {
+                'gql_col_name': 'employee_id',
+                'gql_type': graphene.Int,
+                'gql_description': 'FK.',
+                'db_col_name': 'EmployeeID',
+                'db_type': Integer,
+            },
+            {
+                'gql_col_name': 'salary',
+                'gql_type': graphene.Float,
+                'gql_description': 'Annual salary.',
+                'db_col_name': 'Salary',
+                'db_type': Float,
+            },
+        ],
+        'RELATIONSHIPS': [],
+    },
+]
+```
+
+With `AUTH_MODE = mixed` in `grapinator.ini`:
+
+| Caller | `products` query | `products.unit_cost` field | `employee_salaries` query |
+|--------|-----------------|---------------------------|--------------------------|
+| No token (unauthenticated) | rows returned | `null` (no `buyer`/`manager` role) | Empty result set |
+| Token with `['buyer']` | rows returned | real value | Empty result set |
+| Token with `['hr']` | rows returned | `null` (no `buyer`/`manager` role) | rows returned |
+| Token with `['buyer', 'hr']` | rows returned | real value | rows returned |

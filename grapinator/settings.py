@@ -107,6 +107,17 @@ class Settings(object):
     # Graphene schema file path
     GQL_SCHEMA = None
 
+    # Authentication / JWT settings (all optional; default to auth off)
+    AUTH_MODE = 'off'              # 'off' | 'mixed' | 'required'
+    AUTH_JWKS_URI = None           # JWKS endpoint URL (production IdP)
+    AUTH_ISSUER = None             # Expected JWT issuer
+    AUTH_AUDIENCE = None           # Expected JWT audience
+    AUTH_ALGORITHMS = 'RS256'      # Allowed signing algorithms (comma-separated)
+    AUTH_ROLES_CLAIM = 'roles'     # Dotted-path to roles list inside the JWT payload
+    AUTH_JWKS_CACHE_TTL = 300      # Seconds to cache the JWK set
+    GRAPHIQL_ACCESS = 'authenticated'  # 'authenticated' | 'open' | 'off'
+    AUTH_DEV_SECRET = None         # HS256 secret for local dev tokens only
+
     # Flask application settings
     FLASK_SERVER_NAME = None
     FLASK_DEBUG = None
@@ -212,6 +223,27 @@ class Settings(object):
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
+
+            # load AUTH section (entirely optional — defaults are set above)
+            if properties.has_section('AUTH'):
+                if properties.has_option('AUTH', 'AUTH_MODE'):
+                    self.AUTH_MODE = properties.get('AUTH', 'AUTH_MODE').lower()
+                if properties.has_option('AUTH', 'AUTH_JWKS_URI'):
+                    self.AUTH_JWKS_URI = properties.get('AUTH', 'AUTH_JWKS_URI')
+                if properties.has_option('AUTH', 'AUTH_ISSUER'):
+                    self.AUTH_ISSUER = properties.get('AUTH', 'AUTH_ISSUER')
+                if properties.has_option('AUTH', 'AUTH_AUDIENCE'):
+                    self.AUTH_AUDIENCE = properties.get('AUTH', 'AUTH_AUDIENCE')
+                if properties.has_option('AUTH', 'AUTH_ALGORITHMS'):
+                    self.AUTH_ALGORITHMS = properties.get('AUTH', 'AUTH_ALGORITHMS')
+                if properties.has_option('AUTH', 'AUTH_ROLES_CLAIM'):
+                    self.AUTH_ROLES_CLAIM = properties.get('AUTH', 'AUTH_ROLES_CLAIM')
+                if properties.has_option('AUTH', 'AUTH_JWKS_CACHE_TTL'):
+                    self.AUTH_JWKS_CACHE_TTL = properties.getint('AUTH', 'AUTH_JWKS_CACHE_TTL')
+                if properties.has_option('AUTH', 'GRAPHIQL_ACCESS'):
+                    self.GRAPHIQL_ACCESS = properties.get('AUTH', 'GRAPHIQL_ACCESS').lower()
+                if properties.has_option('AUTH', 'AUTH_DEV_SECRET'):
+                    self.AUTH_DEV_SECRET = properties.get('AUTH', 'AUTH_DEV_SECRET')
 
             # Oracle-specific locale settings consumed by cx_Oracle.
             # Only set when the options are present in the config file.
@@ -376,12 +408,14 @@ class SchemaSettings(object):
                 # check if field gql_description is present and non-empty; if so, use it, otherwise set to None
                 ,'desc':r['gql_description'] if 'gql_description' in r and r['gql_description'] else None
                 # check if field gql_deprecation_reason is present and non-empty; if so, use it, otherwise set to None
-                ,'deprecation_reason': r['gql_deprecation_reason'] if 'gql_deprecation_reason' in r and r['gql_deprecation_reason'] else None   
+                ,'deprecation_reason': r['gql_deprecation_reason'] if 'gql_deprecation_reason' in r and r['gql_deprecation_reason'] else None
                 ,'type_args': r['gql_of_type'] if 'gql_of_type' in r else None
                 ,'isqueryable': r['gql_isqueryable'] if 'gql_isqueryable' in r else True
                 ,'ishidden': r['gql_ishidden'] if 'gql_ishidden' in r else False
                 ,'isresolver': r['gql_isresolver'] if 'gql_isresolver' in r else False
                 ,'resolver_func':r['gql_resolver_func'] if 'gql_resolver_func' in r else None
+                # gql_auth_roles: list of role strings required to read this field; None/absent = public
+                ,'auth_roles': r['gql_auth_roles'] if 'gql_auth_roles' in r and r['gql_auth_roles'] else None
                 } for r in row['FIELDS']]
             gql_class = {
                 'gql_class': row['GQL_CLASS_NAME']
@@ -389,6 +423,8 @@ class SchemaSettings(object):
                 ,'gql_db_class': row['DB_CLASS_NAME']
                 ,'gql_columns': gql_class_cols
                 ,'gql_db_default_sort_col': row['DB_DEFAULT_SORT_COL']
+                # AUTH_ROLES: entity-level role list; absent/None means public (no restriction)
+                ,'gql_entity_auth_roles': row['AUTH_ROLES'] if 'AUTH_ROLES' in row and row['AUTH_ROLES'] else None
                 }
             gql_classes.append(gql_class)
         return gql_classes

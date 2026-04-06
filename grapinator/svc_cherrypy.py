@@ -198,11 +198,27 @@ def run_server():
         (i.e. the ``[WSGI]`` section omits the SSL options) CherryPy runs
         in plain HTTP mode.
     """
-    # Build the middleware stack: CorsMiddleware → SecurityHeadersMiddleware
-    # → WSGILogger (outermost, so every request is logged regardless of CORS
-    # or security-header processing).
+    # Build the middleware stack.  When AUTH_MODE is not 'off', insert
+    # BearerAuthMiddleware between CORS and the Flask app so that:
+    #
+    #   CherryPy (transport)
+    #     └── WSGILogger              (access logging, outermost)
+    #         └── SecurityHeadersMiddleware
+    #             └── CorsMiddleware
+    #                 └── BearerAuthMiddleware  (only when auth is enabled)
+    #                     └── Flask app
+    #
+    # Placing BearerAuthMiddleware inside CorsMiddleware means OPTIONS
+    # preflight requests are already handled by CorsMiddleware and never
+    # reach the auth layer, so CORS negotiation always works regardless of
+    # auth mode.  BearerAuthMiddleware also short-circuits OPTIONS itself as
+    # a belt-and-suspenders safety measure.
+    from grapinator.auth import BearerAuthMiddleware
     handlers = [StreamHandler()]
-    app_with_cors = CorsMiddleware(app)
+    inner_app = app
+    if settings.AUTH_MODE != 'off':
+        inner_app = BearerAuthMiddleware(inner_app, settings)
+    app_with_cors = CorsMiddleware(inner_app)
     app_with_headers = SecurityHeadersMiddleware(app_with_cors)
     app_logged = WSGILogger(app_with_headers, handlers, ApacheFormatter())
 
