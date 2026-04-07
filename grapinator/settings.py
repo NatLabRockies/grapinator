@@ -29,6 +29,26 @@ from datetime import datetime
 from crypto_config import cryptoconfigparser
 
 logger = logging.getLogger(__name__)
+
+
+class _RedactedStr(str):
+    """
+    A ``str`` subclass that replaces its value with ``***REDACTED***`` in
+    ``__repr__`` and ``__str__`` output.
+
+    Used to hold database passwords and connection URIs so that accidental
+    logging of the ``Settings`` object (e.g. via ``logger.debug('%s', settings.__dict__)``
+    or ``repr(settings)``) never exposes credentials in log output.
+
+    The underlying string value is preserved for programmatic use (e.g. when
+    passed to SQLAlchemy's ``create_engine``).
+    """
+
+    def __repr__(self):
+        return "'***REDACTED***'"
+
+    def __str__(self):
+        return '***REDACTED***'
 from sqlalchemy.orm import (
     scoped_session
     ,sessionmaker
@@ -220,10 +240,18 @@ class Settings(object):
             self.DB_CONNECT = properties.get('SQLALCHEMY', 'DB_CONNECT')
             # SQLite URIs omit credentials; all other dialects use the standard
             # user:password@host/dbname form.
+            # Both DB_PASSWORD and SQLALCHEMY_DATABASE_URI are wrapped in
+            # _RedactedStr so accidental logging of the Settings object never
+            # exposes credentials in plaintext log output.
             if 'sqlite' in self.DB_TYPE:
-                self.SQLALCHEMY_DATABASE_URI = f"{self.DB_TYPE}://{self.DB_CONNECT}"
+                self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
+                    f"{self.DB_TYPE}://{self.DB_CONNECT}"
+                )
             else:
-                self.SQLALCHEMY_DATABASE_URI = f"{self.DB_TYPE}://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_CONNECT}"
+                self.DB_PASSWORD = _RedactedStr(self.DB_PASSWORD)
+                self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
+                    f"{self.DB_TYPE}://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_CONNECT}"
+                )
 
             self.SQLALCHEMY_TRACK_MODIFICATIONS = properties.getboolean('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS')
 
