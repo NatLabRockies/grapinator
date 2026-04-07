@@ -21,6 +21,20 @@ All notable changes to Grapinator
 - Removed integration test runner files from `tests/` — that directory now
   contains only pytest unit tests.
 
+## [2.1.6] - 2026-04-20
+
+### Security
+
+- **[LOW] Startup guard for default `AUTH_DEV_SECRET`** (`grapinator/settings.py`)
+  — `Settings` now raises `RuntimeError` at startup if `AUTH_DEV_SECRET` equals
+  the known default value (`change-me-local-dev-only`) while auth is active
+  (`AUTH_MODE != 'off'` and no `AUTH_JWKS_URI` is configured).  Prevents
+  accidental deployment with the committed dev secret, which would make all
+  HS256 tokens trivially forgeable by anyone who has cloned the repository.
+  When `AUTH_MODE = 'off'` the default value is silently permitted (auth is
+  not active, so the secret is irrelevant).
+  *(OWASP A05 — Security Misconfiguration)*
+
 ## [2.1.5] - 2026-04-20
 
 ### Security

@@ -287,6 +287,15 @@ class Settings(object):
                 os.environ['NLS_DATE_FORMAT'] = properties.get('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT')
 
             if self.AUTH_DEV_SECRET:
+                _DEFAULT_DEV_SECRET = 'change-me-local-dev-only'
+                if (self.AUTH_DEV_SECRET == _DEFAULT_DEV_SECRET
+                        and self.AUTH_MODE != 'off'
+                        and not self.AUTH_JWKS_URI):
+                    raise RuntimeError(
+                        'AUTH_DEV_SECRET must be changed from the default value '
+                        'before enabling auth (AUTH_MODE is not "off" and no '
+                        'AUTH_JWKS_URI is configured).'
+                    )
                 logger.warning(
                     'AUTH_DEV_SECRET is set — HS256 local-dev mode active. '
                     'Never use AUTH_DEV_SECRET in production.'

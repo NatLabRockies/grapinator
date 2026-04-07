@@ -337,5 +337,134 @@ class TestRegexLengthCap(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------------------
+# Fix 4: AUTH_DEV_SECRET default value startup guard (LOW)
+# ---------------------------------------------------------------------------
+
+import tempfile
+
+# Minimal ini content for testing the AUTH_DEV_SECRET startup guard.
+# Enough sections/keys for Settings to load without erroring on unrelated
+# missing options.
+_BASE_INI = """\
+[GRAPHENE]
+GQL_SCHEMA = {schema_path}
+
+[AUTH]
+AUTH_MODE = {auth_mode}
+AUTH_DEV_SECRET = {dev_secret}
+
+[WSGI]
+WSGI_SOCKET_HOST = 127.0.0.1
+WSGI_SOCKET_PORT = 8443
+
+[CORS]
+CORS_ENABLE = False
+CORS_EXPOSE_ORIGINS = *
+CORS_ALLOW_METHODS = GET, POST
+CORS_HEADER_MAX_AGE = 1800
+CORS_ALLOW_HEADERS = Origin, X-Requested-With, Content-Type, Accept
+CORS_EXPOSE_HEADERS = Location
+CORS_SEND_WILDCARD = True
+CORS_SUPPORTS_CREDENTIALS = False
+
+[HTTP_HEADERS]
+HTTP_HEADERS_XFRAME = sameorigin
+HTTP_HEADERS_XSS_PROTECTION = 1; mode=block
+HTTP_HEADER_CACHE_CONTROL = no-cache
+HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS = nosniff
+HTTP_HEADERS_REFERRER_POLICY = strict-origin-when-cross-origin
+HTTP_HEADERS_CONTENT_SECURITY_POLICY = default-src 'self'
+
+[FLASK]
+FLASK_SERVER_NAME = localhost:8443
+FLASK_API_ENDPOINT = /gql
+FLASK_DEBUG = False
+
+[SQLALCHEMY]
+DB_TYPE = sqlite+pysqlite
+DB_CONNECT = /db/northwind.db
+SQLALCHEMY_TRACK_MODIFICATIONS = False
+"""
+
+_DEFAULT_SECRET = 'change-me-local-dev-only'
+_REAL_SCHEMA = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'grapinator', 'resources', 'schema.dct')
+)
+# Settings prepends its own module directory to config_file, so temp ini files
+# must be written inside grapinator/resources/ and referenced as /resources/<name>.
+_RESOURCES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'grapinator', 'resources')
+)
+
+
+def _write_ini(auth_mode, dev_secret):
+    """Write a temporary ini file inside grapinator/resources/ and return its
+    relative path (starting with /resources/) for use with Settings()."""
+    content = _BASE_INI.format(
+        schema_path=_REAL_SCHEMA,
+        auth_mode=auth_mode,
+        dev_secret=dev_secret,
+    )
+    f = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.ini', dir=_RESOURCES_DIR, delete=False
+    )
+    f.write(content)
+    f.close()
+    return '/resources/' + os.path.basename(f.name), f.name
+
+
+class TestAuthDevSecretGuard(unittest.TestCase):
+    """
+    Regression tests for LOW: Settings raises RuntimeError when AUTH_DEV_SECRET
+    equals the known default ('change-me-local-dev-only') and auth is active
+    (AUTH_MODE != 'off' and no AUTH_JWKS_URI).
+    """
+
+    def _make_settings(self, auth_mode, dev_secret):
+        from grapinator.settings import Settings
+        rel_path, abs_path = _write_ini(auth_mode, dev_secret)
+        try:
+            return Settings(config_file=rel_path)
+        finally:
+            os.unlink(abs_path)
+
+    def test_default_secret_with_required_mode_raises(self):
+        """Default AUTH_DEV_SECRET + AUTH_MODE=required must raise RuntimeError."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._make_settings('required', _DEFAULT_SECRET)
+        self.assertIn('AUTH_DEV_SECRET', str(ctx.exception))
+
+    def test_default_secret_with_mixed_mode_raises(self):
+        """Default AUTH_DEV_SECRET + AUTH_MODE=mixed must raise RuntimeError."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._make_settings('mixed', _DEFAULT_SECRET)
+        self.assertIn('AUTH_DEV_SECRET', str(ctx.exception))
+
+    def test_default_secret_with_auth_off_allowed(self):
+        """Default AUTH_DEV_SECRET is allowed when AUTH_MODE=off (no-op config)."""
+        # Should not raise — AUTH_MODE=off means auth is disabled
+        settings = self._make_settings('off', _DEFAULT_SECRET)
+        self.assertEqual(settings.AUTH_DEV_SECRET, _DEFAULT_SECRET)
+
+    def test_changed_secret_with_required_mode_allowed(self):
+        """A non-default AUTH_DEV_SECRET is accepted even with AUTH_MODE=required."""
+        settings = self._make_settings('required', 'my-real-strong-secret-not-default')
+        self.assertEqual(settings.AUTH_MODE, 'required')
+
+    def test_changed_secret_with_mixed_mode_allowed(self):
+        """A non-default AUTH_DEV_SECRET is accepted with AUTH_MODE=mixed."""
+        settings = self._make_settings('mixed', 'another-real-secret-not-default')
+        self.assertEqual(settings.AUTH_MODE, 'mixed')
+
+    def test_error_message_mentions_default_remedy(self):
+        """RuntimeError message includes guidance about changing the default."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._make_settings('required', _DEFAULT_SECRET)
+        msg = str(ctx.exception)
+        self.assertIn('AUTH_DEV_SECRET', msg)
+        self.assertIn('default', msg)
+
+
 if __name__ == '__main__':
     unittest.main()
