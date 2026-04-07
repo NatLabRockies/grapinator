@@ -147,7 +147,18 @@ class BearerAuthMiddleware:
         self.issuer = getattr(auth_settings, 'AUTH_ISSUER', None)
         self.audience = getattr(auth_settings, 'AUTH_AUDIENCE', None)
         raw_algs = getattr(auth_settings, 'AUTH_ALGORITHMS', 'RS256')
-        self.algorithms = [a.strip() for a in raw_algs.split(',')]
+        # Explicitly block the 'none' algorithm regardless of what the ini file
+        # contains — accepting 'none' allows completely unsigned tokens, enabling
+        # a full authentication bypass (JWT algorithm confusion attack).
+        self.algorithms = [
+            a.strip() for a in raw_algs.split(',')
+            if a.strip().lower() != 'none'
+        ]
+        if not self.algorithms:
+            raise ValueError(
+                "AUTH_ALGORITHMS must not be empty or 'none'. "
+                "Use 'RS256' for production or 'HS256' for local dev."
+            )
         self.dev_secret = getattr(auth_settings, 'AUTH_DEV_SECRET', None)
         self._jwks_client = None
         self._signing_key = _signing_key  # test override

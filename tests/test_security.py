@@ -1,0 +1,341 @@
+"""
+test_security.py
+
+Regression tests that verify the three HIGH/MEDIUM security fixes from the
+April 2026 security analysis:
+
+  1. JWT 'none' algorithm block (HIGH — auth bypass)
+  2. sort_by column validation (HIGH — unvalidated getattr)
+  3. Regex pattern length cap (MEDIUM — ReDoS)
+"""
+
+import os
+os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
+
+import time
+import unittest
+from unittest.mock import MagicMock, patch
+
+from . import context  # noqa: F401
+
+import jwt as pyjwt
+
+from grapinator.auth import BearerAuthMiddleware
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+DEV_SECRET = 'test-dev-secret-do-not-use-in-production'
+
+
+def _mock_settings(**overrides):
+    s = MagicMock()
+    s.AUTH_MODE = overrides.get('AUTH_MODE', 'required')
+    s.AUTH_JWKS_URI = overrides.get('AUTH_JWKS_URI', None)
+    s.AUTH_ISSUER = overrides.get('AUTH_ISSUER', None)
+    s.AUTH_AUDIENCE = overrides.get('AUTH_AUDIENCE', None)
+    s.AUTH_ALGORITHMS = overrides.get('AUTH_ALGORITHMS', 'HS256')
+    s.AUTH_ROLES_CLAIM = overrides.get('AUTH_ROLES_CLAIM', 'roles')
+    s.AUTH_JWKS_CACHE_TTL = overrides.get('AUTH_JWKS_CACHE_TTL', 300)
+    s.AUTH_DEV_SECRET = overrides.get('AUTH_DEV_SECRET', DEV_SECRET)
+    s.GRAPHIQL_ACCESS = overrides.get('GRAPHIQL_ACCESS', 'authenticated')
+    return s
+
+
+def _downstream():
+    return MagicMock(return_value=[b'ok'])
+
+
+def _make_environ(method='POST', token=None):
+    env = {
+        'REQUEST_METHOD': method,
+        'PATH_INFO': '/gql',
+        'HTTP_ACCEPT': 'application/json',
+        'QUERY_STRING': '',
+    }
+    if token:
+        env['HTTP_AUTHORIZATION'] = f'Bearer {token}'
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: JWT 'none' algorithm block
+# ---------------------------------------------------------------------------
+
+class TestJwtNoneAlgorithmBlocked(unittest.TestCase):
+    """
+    Regression tests for HIGH: JWT 'none' algorithm must never be accepted.
+
+    PyJWT will accept unsigned tokens when 'none' appears in the algorithms
+    list passed to jwt.decode(). Verify that BearerAuthMiddleware strips it
+    regardless of what AUTH_ALGORITHMS is configured to.
+    """
+
+    def test_none_algorithm_stripped_from_list(self):
+        """'none' alone raises ValueError because no valid algorithms remain."""
+        with self.assertRaises(ValueError):
+            BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_ALGORITHMS='none'))
+
+    def test_none_mixed_with_rs256_stripped(self):
+        """'none' is stripped when mixed with a valid algorithm."""
+        mw = BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_ALGORITHMS='RS256,none'))
+        self.assertNotIn('none', mw.algorithms)
+        self.assertIn('RS256', mw.algorithms)
+
+    def test_none_case_insensitive(self):
+        """'NONE', 'None', 'none' are all stripped."""
+        for variant in ('NONE', 'None', 'none', ' none '):
+            mw = BearerAuthMiddleware(
+                _downstream(), _mock_settings(AUTH_ALGORITHMS=f'HS256,{variant}')
+            )
+            for alg in mw.algorithms:
+                self.assertNotEqual(alg.lower(), 'none',
+                                    f"'{variant}' was not stripped from algorithms list")
+
+    def test_only_none_raises_value_error(self):
+        """Setting AUTH_ALGORITHMS to only 'none' raises ValueError at init."""
+        with self.assertRaises(ValueError) as ctx:
+            BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_ALGORITHMS='none'))
+        self.assertIn("'none'", str(ctx.exception))
+
+    def test_empty_algorithms_after_strip_raises_value_error(self):
+        """All algorithms stripped results in ValueError, not silent fallback."""
+        with self.assertRaises(ValueError):
+            BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_ALGORITHMS='none, none'))
+
+    def test_none_algorithm_token_rejected_returns_401(self):
+        """
+        A token that claims alg=none in its header is rejected with 401,
+        not accepted as authenticated.
+        """
+        # Craft a raw 'alg=none' token manually — PyJWT refuses to encode with
+        # none, so we build the header/payload manually and leave the signature empty.
+        import base64, json as _json
+        header = base64.urlsafe_b64encode(
+            _json.dumps({'alg': 'none', 'typ': 'JWT'}).encode()
+        ).rstrip(b'=').decode()
+        payload = base64.urlsafe_b64encode(
+            _json.dumps({'sub': 'attacker', 'roles': ['admin'],
+                         'exp': int(time.time()) + 3600}).encode()
+        ).rstrip(b'=').decode()
+        none_token = f'{header}.{payload}.'
+
+        mw = BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_MODE='required'))
+        start_response = MagicMock()
+        mw(_make_environ(token=none_token), start_response)
+
+        # start_response must have been called with 401
+        args = start_response.call_args[0]
+        self.assertEqual(args[0], '401 Unauthorized')
+
+    def test_valid_hs256_token_still_accepted(self):
+        """Removing 'none' does not break acceptance of a valid HS256 token."""
+        now = int(time.time())
+        token = pyjwt.encode(
+            {'sub': 'user', 'roles': ['reader'], 'iat': now, 'exp': now + 3600},
+            DEV_SECRET, algorithm='HS256',
+        )
+        mw = BearerAuthMiddleware(
+            _downstream(), _mock_settings(AUTH_MODE='required', AUTH_ALGORITHMS='HS256,none')
+        )
+        start_response = MagicMock()
+        result = mw(_make_environ(token=token), start_response)
+        self.assertEqual(result, [b'ok'])
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: sort_by column validation
+# ---------------------------------------------------------------------------
+
+class TestSortByValidation(unittest.TestCase):
+    """
+    Regression tests for HIGH: sort_by must be validated against real model
+    columns before being passed to getattr.
+    """
+
+    def _run_get_query(self, model, info, **kwargs):
+        from grapinator.schema import MyConnectionField
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+        with patch.object(
+            MyConnectionField.__bases__[0], 'get_query', return_value=mock_query
+        ):
+            result = MyConnectionField.get_query(model, info, **kwargs)
+        return result, mock_query
+
+    def _make_info(self, roles=None):
+        info = MagicMock()
+        info.context = {'user_roles': roles or [], 'authenticated': bool(roles)}
+        return info
+
+    def _make_model(self, col_name='employee_id'):
+        """Return a mock model that has exactly one real column attribute."""
+        model = MagicMock()
+        model.__name__ = 'db_TestModel'
+        # Simulate a SQLAlchemy InstrumentedAttribute (has .property)
+        col_attr = MagicMock()
+        col_attr.property = MagicMock()
+        setattr(model, col_name, col_attr)
+
+        # Make hasattr return False for any other attribute name
+        original_hasattr = hasattr
+        def _controlled_hasattr(obj, name):
+            if obj is model:
+                return name == col_name
+            return original_hasattr(obj, name)
+
+        self._hasattr_patcher = patch('builtins.hasattr', side_effect=_controlled_hasattr)
+        self._hasattr_patcher.start()
+        self.addCleanup(self._hasattr_patcher.stop)
+        return model
+
+    def test_valid_sort_column_accepted(self):
+        """A valid column name is passed through to ORDER BY."""
+        from grapinator.schema import MyConnectionField
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+
+        # Use actual imported model and a known-good column
+        from grapinator.model import db_Employees
+        info = self._make_info()
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            MyConnectionField.get_query(db_Employees, info, sort_by='employee_id')
+        mock_query.order_by.assert_called_once()
+
+    def test_nonexistent_column_ignored(self):
+        """A column name that doesn't exist on the model is silently ignored."""
+        from grapinator.schema import MyConnectionField
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+
+        from grapinator.model import db_Employees
+        info = self._make_info()
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            # Should not raise AttributeError
+            MyConnectionField.get_query(db_Employees, info, sort_by='nonexistent_column_xyz')
+        mock_query.order_by.assert_not_called()
+
+    def test_private_attribute_rejected(self):
+        """Attribute names starting with '_' are rejected."""
+        from grapinator.schema import MyConnectionField
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+
+        from grapinator.model import db_Employees
+        info = self._make_info()
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            MyConnectionField.get_query(db_Employees, info, sort_by='__class__')
+        mock_query.order_by.assert_not_called()
+
+    def test_dunder_rejected(self):
+        """Double-underscore dunder names are rejected."""
+        from grapinator.schema import MyConnectionField
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+
+        from grapinator.model import db_Employees
+        info = self._make_info()
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            MyConnectionField.get_query(db_Employees, info, sort_by='__init__')
+        mock_query.order_by.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Regex pattern length cap (ReDoS prevention)
+# ---------------------------------------------------------------------------
+
+class TestRegexLengthCap(unittest.TestCase):
+    """
+    Regression tests for MEDIUM: client-supplied regex patterns longer than
+    200 characters must be rejected with ValueError (not passed to the DB).
+    """
+
+    def _run_get_query_with_regex(self, pattern):
+        from grapinator.schema import MyConnectionField
+        from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        mock_query.order_by = MagicMock(return_value=mock_query)
+        info = MagicMock()
+        info.context = {'user_roles': [], 'authenticated': False}
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            MyConnectionField.get_query(
+                db_Employees, info,
+                matches='regex',
+                first_name=pattern,
+            )
+        return mock_query
+
+    def test_short_regex_accepted(self):
+        """A regex pattern under 200 chars is passed through to the query."""
+        mock_query = self._run_get_query_with_regex('Smith|Jones')
+        mock_query.filter.assert_called_once()
+
+    def test_exactly_200_chars_accepted(self):
+        """A pattern exactly 200 characters long is accepted."""
+        pattern = 'a' * 200
+        mock_query = self._run_get_query_with_regex(pattern)
+        mock_query.filter.assert_called_once()
+
+    def test_201_chars_rejected(self):
+        """A pattern 201 characters long raises ValueError."""
+        pattern = 'a' * 201
+        from grapinator.schema import MyConnectionField
+        from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        info = MagicMock()
+        info.context = {'user_roles': [], 'authenticated': False}
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            with self.assertRaises(ValueError) as ctx:
+                MyConnectionField.get_query(
+                    db_Employees, info,
+                    matches='regex',
+                    first_name=pattern,
+                )
+        self.assertIn('200', str(ctx.exception))
+
+    def test_catastrophic_backtrack_pattern_rejected(self):
+        """A classic ReDoS pattern longer than 200 chars is rejected."""
+        pattern = '(' + 'a+' * 101 + ')$'  # well over 200 chars
+        from grapinator.schema import MyConnectionField
+        from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        info = MagicMock()
+        info.context = {'user_roles': [], 'authenticated': False}
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            with self.assertRaises(ValueError):
+                MyConnectionField.get_query(
+                    db_Employees, info,
+                    matches='regex',
+                    first_name=pattern,
+                )
+
+    def test_re_alias_also_capped(self):
+        """The 're' alias for regex is subject to the same length cap."""
+        pattern = 'x' * 201
+        from grapinator.schema import MyConnectionField
+        from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        info = MagicMock()
+        info.context = {'user_roles': [], 'authenticated': False}
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
+            with self.assertRaises(ValueError):
+                MyConnectionField.get_query(
+                    db_Employees, info,
+                    matches='re',
+                    first_name=pattern,
+                )
+
+
+if __name__ == '__main__':
+    unittest.main()
