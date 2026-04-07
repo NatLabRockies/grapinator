@@ -192,10 +192,22 @@ class MyConnectionField(SQLAlchemyConnectionField):
         sort_dir = args.pop('sort_dir', None)
 
         # Build ORDER BY only when a sort column is actually provided/non-None.
+        # Validate sort_by_name against actual model attributes to prevent
+        # client-controlled getattr on arbitrary/private model members.
         sort_clause = None
         if sort_by_name:
-            sort_col = getattr(model, sort_by_name)
-            sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
+            if (
+                sort_by_name.startswith('_')
+                or not hasattr(model, sort_by_name)
+                or not hasattr(getattr(model, sort_by_name), 'property')
+            ):
+                logger.warning(
+                    'get_query: invalid sort_by column %r on %s — ignored',
+                    sort_by_name, model.__name__,
+                )
+            else:
+                sort_col = getattr(model, sort_by_name)
+                sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
 
         # Let graphene-sqlalchemy 3.x handle its own sort/filter params.
         query = super(MyConnectionField, cls).get_query(
@@ -229,6 +241,14 @@ class MyConnectionField(SQLAlchemyConnectionField):
             if matches in ('exact', 'eq'):
                 filter_conditions.append(getattr(model, field) == value)
             elif matches in ('regex', 're'):
+                # Cap regex length to prevent ReDoS via catastrophic backtracking
+                # in the database engine from client-supplied patterns.
+                if len(str(value)) > 200:
+                    logger.warning(
+                        'get_query: regex pattern too long (%d chars) — rejected',
+                        len(str(value)),
+                    )
+                    raise ValueError('Regex pattern exceeds maximum allowed length (200 chars).')
                 filter_conditions.append(getattr(model, field).regexp_match(value))
             elif matches in ('startswith', 'sw'):
                 filter_conditions.append(getattr(model, field).ilike(str(value) + '%'))

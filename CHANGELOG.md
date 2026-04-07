@@ -2,6 +2,43 @@
 
 All notable changes to Grapinator
 
+## [2.1.4] - 2026-04-07
+
+### Security
+
+- **[HIGH] Block JWT `none` algorithm** (`grapinator/auth.py`) — `none` is now
+  stripped from `AUTH_ALGORITHMS` regardless of ini file contents.  If the
+  resulting list is empty a `ValueError` is raised at startup rather than
+  silently accepting unsigned tokens.  Prevents JWT algorithm confusion
+  attacks that would allow complete authentication bypass.
+  *(OWASP A07 — Identification & Authentication Failures)*
+
+- **[HIGH] Validate `sort_by` against real model columns** (`grapinator/schema.py`)
+  — Client-supplied `sort_by` values are now checked with `hasattr` and
+  verified to be a proper `SQLAlchemy` column attribute (must have `.property`)
+  before being passed to `getattr`.  Names starting with `_` are unconditionally
+  rejected.  Invalid values are logged at WARNING and silently ignored rather
+  than raising an unhandled `AttributeError` that exposed internal model
+  structure.  *(OWASP A03 — Injection)*
+
+- **[MEDIUM] Cap `regex` pattern length to 200 characters** (`grapinator/schema.py`)
+  — Client-supplied regex patterns (via `matches=regex` or `matches=re`) are
+  now rejected with a `ValueError` if they exceed 200 characters.  Prevents
+  ReDoS attacks via catastrophic backtracking patterns sent to the database
+  engine.  *(OWASP A03 — Injection / DoS)*
+
+### Tests
+
+- **`tests/test_security.py`** — 16 new regression tests covering all three
+  fixes:
+  - `TestJwtNoneAlgorithmBlocked` — 7 tests: case-insensitive stripping, mixed
+    lists, empty-after-strip `ValueError`, raw `alg=none` header token rejected
+    as 401, valid HS256 unaffected
+  - `TestSortByValidation` — 4 tests: valid column accepted, non-existent
+    column ignored, `_private` and `__dunder__` names rejected
+  - `TestRegexLengthCap` — 5 tests: short/exact-200 accepted, 201+ rejected,
+    classic ReDoS pattern rejected, `re` alias also capped
+
 ## [2.1.3] - 2026-04-07
 
 ### Added
