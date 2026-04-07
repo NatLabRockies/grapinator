@@ -12,7 +12,7 @@
 # Expected result with role 'hr':  birth_date has a real value.
 # Expected result with no token:   birth_date is null (mixed mode).
 
-TOKEN=$(python tools/dev_jwt.py --roles hr --secret change-me-local-dev-only)
+TOKEN=$(python tools/dev_jwt.py --roles hr --secret grapinator-rbac-dev-only-not-for-production)
 curl -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"query":"{ employees { edges { node { employee_id first_name birth_date} } } }"}' \
