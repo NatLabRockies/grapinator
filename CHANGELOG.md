@@ -2,6 +2,18 @@
 
 All notable changes to Grapinator
 
+## [2.1.5] - 2026-04-07
+
+### Security
+
+- **[MEDIUM] Redact DB credentials in `Settings` to prevent log exposure**
+  (`grapinator/settings.py`) — `DB_PASSWORD` and `SQLALCHEMY_DATABASE_URI`
+  are now stored as `_RedactedStr` instances, a `str` subclass whose
+  `__repr__` and `__str__` return `***REDACTED***`.  The underlying value is
+  still used correctly by `create_engine` and SQLAlchemy, but any accidental
+  logging of the settings object or individual attributes will not expose
+  plaintext credentials.  *(OWASP A02 — Cryptographic Failures)*
+
 ## [2.1.4] - 2026-04-07
 
 ### Security
