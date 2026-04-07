@@ -5,8 +5,9 @@ import logging.config
 from grapinator.settings import Settings, SchemaSettings
 
 # get application settings, exit if something missing.
+_config_file = os.environ.get('GRAPINATOR_CONFIG', '/resources/grapinator.ini')
 try:
-    settings = Settings(config_file='/resources/grapinator.ini')
+    settings = Settings(config_file=_config_file)
 except RuntimeError as err:
     print(f"Runtime error: {err}")
     sys.exit(1)
