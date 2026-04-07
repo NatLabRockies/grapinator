@@ -22,8 +22,11 @@ import graphene
 from graphene import relay
 from graphene_sqlalchemy import SQLAlchemyObjectType, SQLAlchemyConnectionField
 import datetime
-from grapinator import log, schema_settings
+import logging
+from grapinator import schema_settings
 from grapinator.model import *
+
+logger = logging.getLogger(__name__)
 
 # Module-level registry: maps SQLAlchemy class name (e.g. 'db_Employees') to
 # the list of roles required to query that entity.  Populated at schema-build
@@ -207,7 +210,15 @@ class MyConnectionField(SQLAlchemyConnectionField):
             ctx = info.context if info.context is not None else {}
             user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
             if not set(user_roles) & set(entity_auth_roles):
+                logger.debug(
+                    'RBAC entity access denied: %s user_roles=%s required=%s',
+                    model.__name__, user_roles, entity_auth_roles,
+                )
                 return query.filter(sql_false())
+            logger.debug(
+                'RBAC entity access granted: %s user_roles=%s',
+                model.__name__, user_roles,
+            )
 
         filter_conditions = []
         for field, value in args.items():
@@ -256,6 +267,7 @@ class MyConnectionField(SQLAlchemyConnectionField):
 # the schema dictionary and inject each one into the module namespace.  This
 # allows schema.py to grow with the schema file alone — no manual class
 # definitions are needed here.
+_gql_class_count = 0
 for clazz in schema_settings.get_gql_classes():
     globals()[clazz['gql_class']] = gql_class_constructor(
         clazz['gql_class']
@@ -263,10 +275,17 @@ for clazz in schema_settings.get_gql_classes():
         ,clazz['gql_columns']
         ,clazz['gql_db_default_sort_col']
         )
+    logger.debug('GQL type built: %s (db=%s)', clazz['gql_class'], clazz['gql_db_class'])
     # Register entity-level auth roles so MyConnectionField.get_query() can
     # enforce them using the SQLAlchemy model class name as the key.
     if clazz.get('gql_entity_auth_roles'):
         _ENTITY_AUTH_ROLES[clazz['gql_db_class']] = clazz['gql_entity_auth_roles']
+        logger.debug(
+            'Entity auth roles registered: %s -> %s',
+            clazz['gql_db_class'], clazz['gql_entity_auth_roles'],
+        )
+    _gql_class_count += 1
+logger.info('GraphQL types built: %d', _gql_class_count)
 
 def _make_gql_query_fields(cols):
     """
@@ -336,3 +355,4 @@ class Query(graphene.ObjectType):
 # auto_camelcase=False preserves the snake_case field names defined in the
 # schema dictionary, keeping GraphQL field names consistent with the database.
 gql_schema = graphene.Schema(query=Query, auto_camelcase=False)
+logger.info('GraphQL schema compiled (auto_camelcase=False)')

@@ -2,6 +2,35 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.1.3] - 2026-04-07
+
+### Added
+
+- **Structured logging across all modules** — every module now uses a named
+  child logger under the `grapinator` hierarchy so output is routed through
+  the existing `logging.conf` configuration with no changes to that file.
+
+  | Module | Logger name | Key events |
+  |--------|-------------|------------|
+  | `__init__.py` | `grapinator` | `INFO` config/schema loaded; `CRITICAL` on fatal startup error |
+  | `settings.py` | `grapinator.settings` | `DEBUG` file resolution; `WARNING` when `AUTH_DEV_SECRET` is set |
+  | `model.py` | `grapinator.model` | `INFO` engine created + ORM count; `DEBUG` per-class registration |
+  | `schema.py` | `grapinator.schema` | `INFO` type count + schema compiled; `DEBUG` per-type build + RBAC decisions |
+  | `app.py` | `grapinator.app` | `INFO` endpoint registered; `DEBUG` per-request auth state |
+  | `svc_cherrypy.py` | `grapinator.svc_cherrypy` | `INFO` server bind; `DEBUG` middleware stack layers |
+  | `auth.py` | `grapinator.auth` | `INFO` middleware init; `WARNING` dev-secret or failed token; `DEBUG` all pass-through paths |
+
+- **`logging.config.fileConfig` fix** — `disable_existing_loggers=False` passed
+  so child loggers created during imports are not silenced by `fileConfig`.
+
+- **`tests/test_logging.py`** — 33 new tests (2 conditionally skipped when the
+  default schema has no entity auth roles) verifying:
+  - Correct logger names for all modules
+  - Log levels: `DEBUG` for routine decisions, `INFO` for startup milestones,
+    `WARNING` for security-relevant events (dev secret, invalid/missing tokens)
+  - All `BearerAuthMiddleware.__call__` code paths emit the right level
+  - `app.py` per-request auth state is logged at `DEBUG`
+
 ## [2.1.2] - 2026-04-07
 
 ### Added

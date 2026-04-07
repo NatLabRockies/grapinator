@@ -20,6 +20,7 @@ calling ``main()`` directly.
 """
 
 import json
+import logging
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
@@ -27,6 +28,8 @@ from graphql_server.http import GraphQLRequestData
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
 from grapinator.schema import gql_schema
+
+logger = logging.getLogger(__name__)
 
 
 class FixedGraphQLView(GraphQLView):
@@ -130,6 +133,10 @@ def _load_auth_state():
     """
     g.user_roles = flask_request.environ.get('grapinator.user_roles', [])
     g.authenticated = flask_request.environ.get('grapinator.authenticated', False)
+    logger.debug(
+        'Auth state: authenticated=%s roles=%s path=%s',
+        g.authenticated, g.user_roles, flask_request.path,
+    )
 
 
 # GraphiQL IDE is served only when GRAPHIQL_ACCESS is not 'off'.
@@ -150,6 +157,7 @@ app.add_url_rule(
         graphql_ide=_graphql_ide,
     )
 )
+logger.info('GraphQL endpoint registered: %s (graphql_ide=%s)', settings.FLASK_API_ENDPOINT, _graphql_ide)
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):

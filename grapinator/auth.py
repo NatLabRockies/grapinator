@@ -164,8 +164,21 @@ class BearerAuthMiddleware:
                     cache_jwk_set=True,
                     lifespan=cache_ttl,
                 )
+                logger.info(
+                    'BearerAuthMiddleware: JWKS client configured uri=%s cache_ttl=%ss',
+                    jwks_uri, cache_ttl,
+                )
             except Exception as exc:
                 logger.warning('BearerAuthMiddleware: could not initialise PyJWKClient: %s', exc)
+        elif self.dev_secret:
+            logger.warning(
+                'BearerAuthMiddleware: using AUTH_DEV_SECRET (HS256) — local dev only, not for production'
+            )
+
+        logger.info(
+            'BearerAuthMiddleware: mode=%s algorithms=%s graphiql_access=%s',
+            self.mode, self.algorithms, self.graphiql_access,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -245,12 +258,14 @@ class BearerAuthMiddleware:
 
         # Always pass CORS preflight OPTIONS requests through without auth.
         if environ.get('REQUEST_METHOD') == 'OPTIONS':
+            logger.debug('Auth: OPTIONS preflight bypass')
             environ.setdefault('grapinator.user_roles', [])
             environ.setdefault('grapinator.authenticated', False)
             return self.app(environ, start_response)
 
         # GraphiQL IDE bypass: bare GET with text/html and no ?query= parameter.
         if self._is_graphiql_ide_request(environ) and self.graphiql_access == 'open':
+            logger.debug('Auth: GraphiQL IDE open-access bypass')
             environ['grapinator.user_roles'] = []
             environ['grapinator.authenticated'] = False
             return self.app(environ, start_response)
@@ -260,11 +275,13 @@ class BearerAuthMiddleware:
         if token is None:
             if self.mode == 'mixed':
                 # No token in mixed mode → unauthenticated passthrough.
+                logger.debug('Auth: no token in mixed mode — unauthenticated passthrough')
                 environ['grapinator.user_roles'] = []
                 environ['grapinator.authenticated'] = False
                 return self.app(environ, start_response)
             else:
                 # required mode → no token means 401.
+                logger.warning('Auth: required mode — no token presented, returning 401')
                 status, headers, body = _json_401('Authentication required.')
                 start_response(status, headers)
                 return body
@@ -274,7 +291,7 @@ class BearerAuthMiddleware:
         try:
             payload = self._decode_token(token)
         except Exception as exc:
-            logger.debug('BearerAuthMiddleware: token validation failed: %s', exc)
+            logger.warning('Auth: token validation failed (%s): %s', type(exc).__name__, exc)
             exc_name = type(exc).__name__
             if 'Expired' in exc_name:
                 msg = 'Token has expired.'
@@ -291,4 +308,5 @@ class BearerAuthMiddleware:
         roles = _get_roles_from_payload(payload, self.roles_claim)
         environ['grapinator.user_roles'] = roles
         environ['grapinator.authenticated'] = True
+        logger.debug('Auth: token valid, roles=%s', roles)
         return self.app(environ, start_response)

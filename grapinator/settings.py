@@ -22,10 +22,13 @@ and imported throughout the package as singletons.
 """
 
 import graphene
+import logging
 import os
 from os import path
 from datetime import datetime
 from crypto_config import cryptoconfigparser
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.orm import (
     scoped_session
     ,sessionmaker
@@ -159,6 +162,8 @@ class Settings(object):
         else:
             raise RuntimeError('Could not parse config_file.')
 
+        logger.debug('Settings: resolving config file: %s', config_file)
+
         # CryptoConfigParser reads the encryption key from the environment
         # so credentials are never stored in plain text.
         try:
@@ -171,6 +176,7 @@ class Settings(object):
             cwd = path.abspath(path.dirname(__file__))
             properties = cryptoconfigparser.CryptoConfigParser(crypt_key=key)
             properties_file = cwd + self.config_file
+            logger.debug('Settings: reading properties file: %s', properties_file)
             properties.read(properties_file)
 
             # load WSGI section
@@ -251,7 +257,23 @@ class Settings(object):
                 os.environ['NLS_LANG'] = properties.get('SQLALCHEMY', 'ORCL_NLS_LANG')
             if properties.has_option('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT'):
                 os.environ['NLS_DATE_FORMAT'] = properties.get('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT')
-            
+
+            if self.AUTH_DEV_SECRET:
+                logger.warning(
+                    'AUTH_DEV_SECRET is set — HS256 local-dev mode active. '
+                    'Never use AUTH_DEV_SECRET in production.'
+                )
+            logger.debug(
+                'Settings: WSGI=%s:%s TLS=%s CORS_ENABLE=%s',
+                self.WSGI_SOCKET_HOST, self.WSGI_SOCKET_PORT,
+                'on' if self.WSGI_SSL_CERT else 'off',
+                self.CORS_ENABLE,
+            )
+            logger.debug(
+                'Settings: DB_TYPE=%s AUTH_MODE=%s GRAPHIQL_ACCESS=%s',
+                self.DB_TYPE, self.AUTH_MODE, self.GRAPHIQL_ACCESS,
+            )
+
         except cryptoconfigparser.ParsingError as err:
             raise RuntimeError(f"Could not parse: {err}")
 
