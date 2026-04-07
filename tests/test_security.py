@@ -466,5 +466,131 @@ class TestAuthDevSecretGuard(unittest.TestCase):
         self.assertIn('default', msg)
 
 
+# ---------------------------------------------------------------------------
+# Fix 5: FLASK_DEBUG=True with auth enabled warning (LOW)
+# ---------------------------------------------------------------------------
+
+_BASE_INI_DEBUG = """\
+[GRAPHENE]
+GQL_SCHEMA = {schema_path}
+
+[AUTH]
+AUTH_MODE = {auth_mode}
+
+[WSGI]
+WSGI_SOCKET_HOST = 127.0.0.1
+WSGI_SOCKET_PORT = 8443
+
+[CORS]
+CORS_ENABLE = False
+CORS_EXPOSE_ORIGINS = *
+CORS_ALLOW_METHODS = GET, POST
+CORS_HEADER_MAX_AGE = 1800
+CORS_ALLOW_HEADERS = Origin, X-Requested-With, Content-Type, Accept
+CORS_EXPOSE_HEADERS = Location
+CORS_SEND_WILDCARD = True
+CORS_SUPPORTS_CREDENTIALS = False
+
+[HTTP_HEADERS]
+HTTP_HEADERS_XFRAME = sameorigin
+HTTP_HEADERS_XSS_PROTECTION = 1; mode=block
+HTTP_HEADER_CACHE_CONTROL = no-cache
+HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS = nosniff
+HTTP_HEADERS_REFERRER_POLICY = strict-origin-when-cross-origin
+HTTP_HEADERS_CONTENT_SECURITY_POLICY = default-src 'self'
+
+[FLASK]
+FLASK_SERVER_NAME = localhost:8443
+FLASK_API_ENDPOINT = /gql
+FLASK_DEBUG = {flask_debug}
+
+[SQLALCHEMY]
+DB_TYPE = sqlite+pysqlite
+DB_CONNECT = /db/northwind.db
+SQLALCHEMY_TRACK_MODIFICATIONS = False
+"""
+
+
+def _write_ini_debug(auth_mode, flask_debug):
+    """Write a temp ini file for FLASK_DEBUG tests; returns (rel_path, abs_path)."""
+    content = _BASE_INI_DEBUG.format(
+        schema_path=_REAL_SCHEMA,
+        auth_mode=auth_mode,
+        flask_debug=flask_debug,
+    )
+    f = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.ini', dir=_RESOURCES_DIR, delete=False
+    )
+    f.write(content)
+    f.close()
+    return '/resources/' + os.path.basename(f.name), f.name
+
+
+class TestFlaskDebugWithAuthGuard(unittest.TestCase):
+    """
+    Regression tests for LOW: Settings must log a WARNING when FLASK_DEBUG=True
+    is combined with AUTH_MODE != 'off'.
+    """
+
+    def _make_settings_debug(self, auth_mode, flask_debug):
+        from grapinator.settings import Settings
+        rel_path, abs_path = _write_ini_debug(auth_mode, flask_debug)
+        try:
+            return Settings(config_file=rel_path)
+        finally:
+            os.unlink(abs_path)
+
+    def test_flask_debug_true_with_required_logs_warning(self):
+        """FLASK_DEBUG=True + AUTH_MODE=required must produce a WARNING."""
+        with self.assertLogs('grapinator.settings', level='WARNING') as cm:
+            self._make_settings_debug('required', 'True')
+        self.assertTrue(
+            any('FLASK_DEBUG' in msg for msg in cm.output),
+            'Expected FLASK_DEBUG warning in log output',
+        )
+
+    def test_flask_debug_true_with_mixed_logs_warning(self):
+        """FLASK_DEBUG=True + AUTH_MODE=mixed must produce a WARNING."""
+        with self.assertLogs('grapinator.settings', level='WARNING') as cm:
+            self._make_settings_debug('mixed', 'True')
+        self.assertTrue(
+            any('FLASK_DEBUG' in msg for msg in cm.output),
+        )
+
+    def test_flask_debug_true_with_auth_off_no_warning(self):
+        """FLASK_DEBUG=True with AUTH_MODE=off must NOT produce the FLASK_DEBUG warning."""
+        import logging
+        with self.assertLogs('grapinator.settings', level='DEBUG') as cm:
+            # Emit a dummy log so assertLogs doesn't fail when nothing is logged
+            logging.getLogger('grapinator.settings').debug('_sentinel_')
+            self._make_settings_debug('off', 'True')
+        flask_debug_warnings = [
+            msg for msg in cm.output if 'FLASK_DEBUG' in msg and 'WARNING' in msg
+        ]
+        self.assertEqual(flask_debug_warnings, [],
+                         'No FLASK_DEBUG warning expected when AUTH_MODE=off')
+
+    def test_flask_debug_false_with_required_no_warning(self):
+        """FLASK_DEBUG=False must never produce the FLASK_DEBUG warning."""
+        import logging
+        with self.assertLogs('grapinator.settings', level='DEBUG') as cm:
+            logging.getLogger('grapinator.settings').debug('_sentinel_')
+            self._make_settings_debug('required', 'False')
+        flask_debug_warnings = [
+            msg for msg in cm.output if 'FLASK_DEBUG' in msg and 'WARNING' in msg
+        ]
+        self.assertEqual(flask_debug_warnings, [])
+
+    def test_warning_message_mentions_auth_mode(self):
+        """The warning message must include the active AUTH_MODE value."""
+        with self.assertLogs('grapinator.settings', level='WARNING') as cm:
+            self._make_settings_debug('required', 'True')
+        warning_msgs = [msg for msg in cm.output if 'FLASK_DEBUG' in msg]
+        self.assertTrue(
+            any('required' in msg for msg in warning_msgs),
+            'Warning should mention the active AUTH_MODE value',
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -300,6 +300,14 @@ class Settings(object):
                     'AUTH_DEV_SECRET is set — HS256 local-dev mode active. '
                     'Never use AUTH_DEV_SECRET in production.'
                 )
+            if self.FLASK_DEBUG and self.AUTH_MODE != 'off':
+                logger.warning(
+                    'FLASK_DEBUG=True with auth enabled (AUTH_MODE=%s) — '
+                    'Flask\'s interactive debugger exposes a Python REPL over '
+                    'HTTP and bypasses all authentication. Never deploy this '
+                    'configuration.',
+                    self.AUTH_MODE,
+                )
             logger.debug(
                 'Settings: WSGI=%s:%s TLS=%s CORS_ENABLE=%s',
                 self.WSGI_SOCKET_HOST, self.WSGI_SOCKET_PORT,

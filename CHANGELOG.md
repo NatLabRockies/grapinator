@@ -2,6 +2,18 @@
 
 All notable changes to Grapinator
 
+## [2.1.7] - 2026-04-07
+
+### Security
+
+- **[LOW] Warn on `FLASK_DEBUG=True` with auth enabled** (`grapinator/settings.py`)
+  — `Settings` now logs a `WARNING` at startup when `FLASK_DEBUG = True` is
+  combined with `AUTH_MODE != 'off'`.  Flask's interactive debugger exposes
+  a Python REPL over HTTP and effectively bypasses all authentication; this
+  combination must never be used in production.  The warning includes the
+  active `AUTH_MODE` value to make the misconfiguration explicit in the log.
+  *(OWASP A05 — Security Misconfiguration)*
+
 ## [2.1.6] - 2026-04-07
 
 ### Security
