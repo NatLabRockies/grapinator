@@ -8,7 +8,16 @@
             "name": "Python: Run grapinator",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/grapinator/app.py"
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py"
+        },
+        {
+            "name": "Python: Run grapinator (RBAC)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
+            "env": {
+                "GRAPINATOR_CONFIG": "/resources/grapinator_rbac.ini"
+            }
         },
         {
             "name": "Python: Current File",
