@@ -2,6 +2,16 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.1.2] - 2026-04-07
+
+### Added
+
+- **`GRAPINATOR_CONFIG` environment variable** — override the ini file loaded at
+  startup without changing code.  Defaults to `/resources/grapinator.ini`.
+  Follows the same pattern as the existing `GQLAPI_CRYPT_KEY` env var.
+- **`docs/grapinator_ini.md`** — new "Selecting the ini file at runtime" section
+  documenting `GRAPINATOR_CONFIG` with usage examples.
+
 ## [2.1.1] - 2026-04-07
 
 ### Bug Fixes

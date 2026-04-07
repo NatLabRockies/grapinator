@@ -6,6 +6,25 @@ transparently decrypts any values that were encrypted with CryptoConfig (see [En
 
 ---
 
+## Selecting the ini file at runtime
+
+By default Grapinator loads `grapinator/resources/grapinator.ini`.  Set the `GRAPINATOR_CONFIG`
+environment variable to override this path at startup without changing any code.  The path is
+resolved relative to the **`grapinator/` package directory** (same convention as `GQL_SCHEMA`).
+
+```bash
+# Use the default ini file
+python grapinator/svc_cherrypy.py
+
+# Use an alternate ini file (e.g. for RBAC testing)
+GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini python grapinator/svc_cherrypy.py
+```
+
+This follows the same pattern as `GQLAPI_CRYPT_KEY` and makes it easy to run multiple
+configurations side-by-side without editing files.
+
+---
+
 ## Encrypted Values
 
 Any value in the ini file can be stored in encrypted form using the `enc(...)` wrapper syntax.
