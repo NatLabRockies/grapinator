@@ -854,36 +854,40 @@ class TestDevJwtTool(unittest.TestCase):
 # ===========================================================================
 
 class TestSettingsAuthSection(unittest.TestCase):
-    """Settings.AUTH_* attributes have correct defaults and load from ini."""
+    """Settings class-level AUTH_* attribute defaults are correct.
+
+    Tests check the class defaults defined on Settings, not the loaded
+    singleton, so they remain valid regardless of what grapinator.ini
+    currently has configured.
+    """
 
     def test_default_auth_mode_is_off(self):
-        from grapinator import settings as app_settings
-        # The test ini has no AUTH_MODE override, so the class default applies
-        self.assertEqual(app_settings.AUTH_MODE, 'off')
+        from grapinator.settings import Settings
+        self.assertEqual(Settings.AUTH_MODE, 'off')
 
     def test_default_graphiql_access_is_authenticated(self):
-        from grapinator import settings as app_settings
-        self.assertEqual(app_settings.GRAPHIQL_ACCESS, 'authenticated')
+        from grapinator.settings import Settings
+        self.assertEqual(Settings.GRAPHIQL_ACCESS, 'authenticated')
 
     def test_default_algorithms_is_rs256(self):
-        from grapinator import settings as app_settings
-        self.assertEqual(app_settings.AUTH_ALGORITHMS, 'RS256')
+        from grapinator.settings import Settings
+        self.assertEqual(Settings.AUTH_ALGORITHMS, 'RS256')
 
     def test_default_roles_claim_is_roles(self):
-        from grapinator import settings as app_settings
-        self.assertEqual(app_settings.AUTH_ROLES_CLAIM, 'roles')
+        from grapinator.settings import Settings
+        self.assertEqual(Settings.AUTH_ROLES_CLAIM, 'roles')
 
     def test_default_jwks_cache_ttl(self):
-        from grapinator import settings as app_settings
-        self.assertEqual(app_settings.AUTH_JWKS_CACHE_TTL, 300)
+        from grapinator.settings import Settings
+        self.assertEqual(Settings.AUTH_JWKS_CACHE_TTL, 300)
 
     def test_default_dev_secret_is_none(self):
-        from grapinator import settings as app_settings
-        self.assertIsNone(app_settings.AUTH_DEV_SECRET)
+        from grapinator.settings import Settings
+        self.assertIsNone(Settings.AUTH_DEV_SECRET)
 
     def test_default_jwks_uri_is_none(self):
-        from grapinator import settings as app_settings
-        self.assertIsNone(app_settings.AUTH_JWKS_URI)
+        from grapinator.settings import Settings
+        self.assertIsNone(Settings.AUTH_JWKS_URI)
 
 
 if __name__ == '__main__':

@@ -351,6 +351,16 @@ AUTH_ROLES_CLAIM = https://grapinator/roles
 
 ### Local development with `AUTH_DEV_SECRET`
 
+> **Important:** JWT authentication is enforced by `BearerAuthMiddleware`, which is only
+> inserted into the WSGI stack when the service runs under **`svc_cherrypy.py`**.  Flask's
+> built-in development server (`grapinator/app.py` / `flask run`) does **not** invoke the
+> middleware, so `Authorization` headers are silently ignored and all fields are returned
+> regardless of role.  Always test RBAC against the CherryPy server:
+>
+> ```bash
+> python grapinator/svc_cherrypy.py
+> ```
+
 During development you can authenticate without a running IdP by using HS256 tokens signed with
 a shared secret.  **This is not suitable for production.**
 
@@ -384,11 +394,25 @@ a shared secret.  **This is not suitable for production.**
 3. Pass the token in requests:
 
    ```bash
-   TOKEN=$(python tools/dev_jwt.py --roles admin,reader)
+   #!/bin/sh
+   # RBAC test — queries birth_date which is restricted to the 'hr' role in schema_rbac.dct.
+   #
+   # IMPORTANT: JWT auth (BearerAuthMiddleware) is only active when the service is
+   # running under the CherryPy WSGI server (svc_cherrypy.py).  Flask's built-in
+   # development server (app.py / `flask run`) does NOT insert the auth middleware
+   # and will return data for ALL fields regardless of role.
+   #
+   # Start the server with:
+   #   python grapinator/svc_cherrypy.py
+   #
+   # Expected result with role 'hr':  birth_date has a real value.
+   # Expected result with no token:   birth_date is null (mixed mode).
+
+   TOKEN=$(python tools/dev_jwt.py --roles hr --secret change-me-local-dev-only)
    curl -H "Authorization: Bearer $TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"query":"{ employees { edges { node { employee_id first_name } } } }"}' \
-        http://localhost:8443/northwind/gql
+       -H "Content-Type: application/json" \
+       -d '{"query":"{ employees { edges { node { employee_id first_name birth_date} } } }"}' \
+       http://localhost:8443/northwind/gql
    ```
 
 > **Security note:** `AUTH_DEV_SECRET` enables HS256 validation only when no `AUTH_JWKS_URI` is
