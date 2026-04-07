@@ -409,6 +409,17 @@ Auth mode must be enabled in `grapinator.ini` for RBAC to take effect.  With `AU
 (the default), all RBAC declarations are silently ignored and every caller receives the full
 data set.  See [grapinator_ini.md](grapinator_ini.md) for configuration details.
 
+> **Important — use `svc_cherrypy.py` when testing RBAC:**
+> JWT authentication is enforced by `BearerAuthMiddleware`, which is only inserted into the
+> WSGI stack when the service runs under the CherryPy production server.  Flask's built-in
+> development server (`grapinator/app.py` / `flask run`) does **not** invoke the middleware,
+> so `Authorization` headers are silently ignored and role-restricted fields return their
+> real values for all callers.  To test RBAC end-to-end, always start the server with:
+>
+> ```bash
+> python grapinator/svc_cherrypy.py
+> ```
+
 ### Entity-level access: `AUTH_ROLES`
 
 `AUTH_ROLES` is a top-level key on the entity dictionary.  It gates access to the **entire

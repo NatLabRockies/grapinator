@@ -2,6 +2,60 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.1.1] - 2026-04-07
+
+### Bug Fixes
+
+#### RBAC / JWT auth not working — three root causes (Issue #17)
+
+- **`tests/test_rbac.sh` — wrong shebang** (`!#/bin/sh` → `#!/bin/sh`):
+  The reversed characters prevented the OS from recognising the interpreter
+  directive, so the script could not be executed directly.
+
+- **`tests/test_rbac.sh` — no signing secret passed to `dev_jwt.py`** *(primary cause)*:
+  `dev_jwt.py` requires `--secret` or `GRAPINATOR_DEV_SECRET`.  Neither was
+  provided, so the tool exited with an error, `TOKEN` was empty, and curl sent
+  `Authorization: Bearer ` (no token).  `BearerAuthMiddleware` attempted to
+  decode the empty string, failed immediately, and returned 401 — so no
+  GraphQL execution occurred and `birth_date` appeared as `null` in the error
+  response rather than from a resolver.  Fixed by adding
+  `--secret change-me-local-dev-only` to match the `AUTH_DEV_SECRET` configured
+  in `grapinator.ini`.
+
+- **Both ini files — `Authorization` missing from `CORS_ALLOW_HEADERS`**:
+  Browser preflight (`OPTIONS`) did not advertise `Authorization` as an allowed
+  header, causing browsers to refuse to send the JWT when using the GraphiQL
+  IDE.  Added `Authorization` to `CORS_ALLOW_HEADERS` in both
+  `grapinator.ini` and `grapinator_rbac.ini`.
+
+#### Flask dev server bypasses auth middleware
+
+`BearerAuthMiddleware` is only inserted into the WSGI stack by `svc_cherrypy.py`.
+Flask's built-in dev server (`app.py` / `flask run`) does not invoke the
+middleware, so JWT tokens are silently ignored and role-restricted fields return
+their real values to all callers.  Documentation and `test_rbac.sh` now
+prominently note that RBAC testing requires running `svc_cherrypy.py`.
+
+### New Files
+- **`grapinator/resources/schema_rbac.dct`** — Example schema with `gql_auth_roles`
+  on `birth_date` (restricted to `['admin', 'hr']`) for RBAC testing
+- **`grapinator/resources/grapinator_rbac.ini`** — Matching ini with
+  `AUTH_MODE = mixed` and `AUTH_DEV_SECRET` for local RBAC dev/testing
+- **`tests/test_rbac.sh`** — Shell script that generates an `hr` JWT and queries
+  the `birth_date` field to verify field-level RBAC end-to-end
+
+### Tests
+- **Fixed `TestSettingsAuthSection`** — tests now check `Settings` class-level
+  attribute defaults rather than the loaded singleton, so they remain valid
+  regardless of what `grapinator.ini` currently has configured
+
+### Documentation
+- **`docs/grapinator_ini.md`** — Added CherryPy requirement callout to the
+  "Local development" section; replaced the generic curl example with the
+  contents of `tests/test_rbac.sh`
+- **`docs/schema_docs.md`** — Added CherryPy requirement callout at the top of
+  the RBAC section
+
 ## [2.1.0] - 2026-04-06
 
 ### New Features
