@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the GraphQL Integration Testing Suite.
+All notable changes to Grapinator
 
 ## [2.1.3] - 2026-04-07
 
