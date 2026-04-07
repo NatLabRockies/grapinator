@@ -26,10 +26,14 @@ from sqlalchemy.orm import (
 )
 
 from grapinator import settings, schema_settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # convert_unicode parameter was removed in SQLAlchemy 2.0.
 # pool_pre_ping=True ensures stale connections are recycled before use.
 engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
+logger.info('Database engine created: %s', settings.DB_TYPE)
 
 # Scoped session ties a single Session instance to the current thread/request
 # context.  autocommit=False means callers must explicitly commit transactions.
@@ -103,6 +107,7 @@ def orm_class_constructor(clazz_name, db_table, clazz_pk, clazz_attrs, clazz_rel
 # corresponding ORM class in this module's global namespace.  This makes them
 # importable via ``from grapinator.model import *`` without listing each class
 # explicitly, and keeps the code in sync with the schema automatically.
+_orm_class_count = 0
 for db_class in schema_settings.get_db_classes():
     globals()[db_class['db_class']] = orm_class_constructor(
         db_class['db_class']
@@ -111,3 +116,6 @@ for db_class in schema_settings.get_db_classes():
         ,db_class['db_columns']
         ,db_class['db_relationships']
         )
+    logger.debug('ORM class registered: %s -> table %s', db_class['db_class'], db_class['db_table'])
+    _orm_class_count += 1
+logger.info('ORM registration complete: %d classes', _orm_class_count)
