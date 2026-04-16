@@ -2,6 +2,30 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.0.3] - 2026-04-16
+
+### Bug Fixes
+
+#### GraphiQL Web Interface Fixes (Issue #19)
+
+- **Fixed 404 when typing a query after the default placeholder text** — the
+  `EXAMPLE_QUERY` constant in `graphiql.html` ended with a trailing bare `#`
+  comment line before its closing backtick.  That `#` was included in the
+  request body, causing the server to return 404 instead of a GraphQL result.
+  Fixed by overriding `graphql_ide_html` on `FixedGraphQLView` in `app.py` and
+  stripping the offending line with a targeted `replace()` call.
+
+- **Fixed silent `ReferenceError` breaking URL sharing** — `updateURL()` in
+  `graphiql.html` called `locationQuery(parameters)`, a function that is never
+  defined anywhere in the file.  This raised a `ReferenceError` on every
+  keystroke, preventing the browser address bar from reflecting the current
+  query and making query URL sharing impossible.  Fixed in the same
+  `graphql_ide_html` override by replacing the broken call with a
+  self-contained `Object.entries`-based URL-building implementation.
+
+Both fixes are applied at runtime via the `graphql_ide_html` property override
+on `FixedGraphQLView` — no changes to the installed library are required.
+
 ## [2.0.2] - 2026-03-25
 
 ### New Features

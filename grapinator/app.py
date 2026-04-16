@@ -6,7 +6,7 @@ Flask application factory and entry point for the Grapinator GraphQL API.
 This module:
 
   1. Defines :class:`FixedGraphQLView`, a patched subclass of the upstream
-     ``GraphQLView`` that corrects two rendering bugs present in
+     ``GraphQLView`` that corrects four rendering bugs present in
      graphql-server 3.0.0.
   2. Creates and configures the Flask ``app`` instance, attaching the GraphQL
      endpoint from ``settings.FLASK_API_ENDPOINT``.
@@ -30,7 +30,7 @@ from grapinator.schema import gql_schema
 
 
 class FixedGraphQLView(GraphQLView):
-    """Patched ``GraphQLView`` that corrects two bugs in graphql-server 3.0.0.
+    """Patched ``GraphQLView`` that corrects four bugs in graphql-server 3.0.0.
 
     **Bug 1 — ``None`` serialised as the string ``"None"``:**
     Python's ``None`` renders as the literal string ``"None"`` inside Jinja2
@@ -46,7 +46,59 @@ class FixedGraphQLView(GraphQLView):
     leaving the placeholder empty and producing a JS ``SyntaxError``
     (``operationName: ,``).  This override uses ``operation_name`` to match
     the template variable name.
+
+    **Bug 3 — trailing empty comment line causes 404 (issue #19):**
+    The ``EXAMPLE_QUERY`` constant in ``graphiql.html`` ends with a bare
+    ``#`` comment line before its closing backtick.  When a user types after
+    the default placeholder text, that ``#`` is included in the request body
+    and the server returns a 404.  Fixed in the ``graphql_ide_html`` property.
+
+    **Bug 4 — ``locationQuery`` is undefined (issue #19):**
+    The ``updateURL()`` function calls ``locationQuery(parameters)``, but
+    ``locationQuery`` is never defined, causing a silent ``ReferenceError``
+    on every keystroke and preventing URL sharing.  Fixed in the
+    ``graphql_ide_html`` property.
     """
+
+    @property
+    def graphql_ide_html(self) -> str:
+        """
+        Return the GraphiQL IDE HTML with two upstream bugs patched in-place.
+
+        **Bug 3 — trailing empty comment causes 404:**
+        The ``EXAMPLE_QUERY`` constant in ``graphiql.html`` ends with a lone
+        ``#`` comment line immediately before the closing backtick.  When a
+        user types a query after the default placeholder text, that bare ``#``
+        is included in the request body, causing the server to return a 404
+        instead of a GraphQL result.  The fix removes that trailing ``#\\n``
+        before the closing backtick.
+
+        **Bug 4 — ``locationQuery`` is undefined:**
+        The ``updateURL()`` function in ``graphiql.html`` calls
+        ``locationQuery(parameters)``, but ``locationQuery`` is never defined
+        anywhere in the file.  This raises a silent ``ReferenceError`` in the
+        browser console on every keystroke and prevents the address bar from
+        reflecting the current query (breaking URL sharing).  The fix replaces
+        the broken call with a self-contained URL-building implementation.
+        """
+        html = super().graphql_ide_html
+        # Fix 3: remove the trailing empty comment line from EXAMPLE_QUERY.
+        # That lone '#\n' before the closing backtick is included in requests
+        # typed after the default text, causing a 404 response.
+        html = html.replace('#\n`;\n', '`;\n', 1)
+        # Fix 4: locationQuery is never defined; replace with a working
+        # URL-building implementation so the address bar reflects the query.
+        html = html.replace(
+            'history.replaceState(null, null, locationQuery(parameters));',
+            'var p = Object.entries(parameters)'
+            '.filter(([,v]) => v !== undefined && v !== null && v !== "")'
+            '.map(([k,v]) => encodeURIComponent(k)+"="+encodeURIComponent(v))'
+            '.join("&");'
+            'history.replaceState(null, null,'
+            ' window.location.pathname + (p ? "?"+p : ""));',
+            1,
+        )
+        return html
 
     def render_graphql_ide(
         self, request: Request, request_data: GraphQLRequestData
