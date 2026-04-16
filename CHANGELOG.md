@@ -2,6 +2,39 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.0.3] - 2026-04-16
+
+### Bug Fixes
+
+#### GraphiQL Web Interface Fixes (Issue #19)
+
+- **Fixed 404 when typing a query after the default placeholder text** — the
+  `EXAMPLE_QUERY` constant in `graphiql.html` ended with a trailing bare `#`
+  comment line before its closing backtick.  That `#` was included in the
+  request body, causing the server to return 404 instead of a GraphQL result.
+  Fixed by overriding `graphql_ide_html` on `FixedGraphQLView` in `app.py` and
+  stripping the offending line with a targeted `replace()` call.
+
+- **Fixed silent `ReferenceError` breaking URL sharing** — `updateURL()` in
+  `graphiql.html` called `locationQuery(parameters)`, a function that is never
+  defined anywhere in the file.  This raised a `ReferenceError` on every
+  keystroke, preventing the browser address bar from reflecting the current
+  query and making query URL sharing impossible.  Fixed in the same
+  `graphql_ide_html` override by replacing the broken call with a
+  self-contained `Object.entries`-based URL-building implementation.
+
+- **Fixed `"Loading..."` on page reload or shared URL** — when my fix for
+  the `locationQuery` bug (above) started writing `?query=...` into the
+  address bar, reloading the page caused Flask's `render_template_string` to
+  HTML-escape the `"` quotes in `json.dumps(request_data.query)` to `&#34;`.
+  The resulting JavaScript (`query: &#34;...&#34;`) was a `SyntaxError` that
+  silenced the entire `<script>` block and left the React root stuck on
+  "Loading...".  Fixed by wrapping every `json.dumps()` value passed to
+  `render_template_string` with `markupsafe.Markup`, which tells Jinja2 the
+  value is already safe HTML and should not be re-escaped.
+
+Both fixes are applied at runtime — no changes to the installed library are required. The `1` argument on each `replace()` call limits the substitution to the first match.
+
 ## [2.0.2] - 2026-03-25
 
 ### New Features

@@ -6,7 +6,7 @@ Flask application factory and entry point for the Grapinator GraphQL API.
 This module:
 
   1. Defines :class:`FixedGraphQLView`, a patched subclass of the upstream
-     ``GraphQLView`` that corrects two rendering bugs present in
+     ``GraphQLView`` that corrects five rendering bugs present in
      graphql-server 3.0.0.
   2. Creates and configures the Flask ``app`` instance, attaching the GraphQL
      endpoint from ``settings.FLASK_API_ENDPOINT``.
@@ -21,6 +21,7 @@ calling ``main()`` directly.
 
 import json
 from flask import Flask, Request, Response, render_template_string
+from markupsafe import Markup
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
 
@@ -30,7 +31,7 @@ from grapinator.schema import gql_schema
 
 
 class FixedGraphQLView(GraphQLView):
-    """Patched ``GraphQLView`` that corrects two bugs in graphql-server 3.0.0.
+    """Patched ``GraphQLView`` that corrects four bugs in graphql-server 3.0.0.
 
     **Bug 1 — ``None`` serialised as the string ``"None"``:**
     Python's ``None`` renders as the literal string ``"None"`` inside Jinja2
@@ -46,7 +47,68 @@ class FixedGraphQLView(GraphQLView):
     leaving the placeholder empty and producing a JS ``SyntaxError``
     (``operationName: ,``).  This override uses ``operation_name`` to match
     the template variable name.
+
+    **Bug 3 — trailing empty comment line causes 404 (issue #19):**
+    The ``EXAMPLE_QUERY`` constant in ``graphiql.html`` ends with a bare
+    ``#`` comment line before its closing backtick.  When a user types after
+    the default placeholder text, that ``#`` is included in the request body
+    and the server returns a 404.  Fixed in the ``graphql_ide_html`` property.
+
+    **Bug 4 — ``locationQuery`` is undefined (issue #19):**
+    The ``updateURL()`` function calls ``locationQuery(parameters)``, but
+    ``locationQuery`` is never defined, causing a silent ``ReferenceError``
+    on every keystroke and preventing URL sharing.  Fixed in the
+    ``graphql_ide_html`` property.
+
+    **Bug 5 — Jinja2 HTML-escapes JSON values, breaking JavaScript (issue #19):**
+    Flask's ``render_template_string`` enables auto-escaping, so bare
+    ``json.dumps()`` strings have their ``"`` quotes turned into ``&#34;``
+    HTML entities.  This produces invalid JavaScript (``query: &#34;...&#34;``)
+    whenever the page is reloaded with ``?query=...`` in the URL, keeping the
+    React root stuck on "Loading...".  Fixed by wrapping all
+    ``json.dumps()`` values with ``markupsafe.Markup`` so Jinja2 skips the
+    HTML-escaping step.
     """
+
+    @property
+    def graphql_ide_html(self) -> str:
+        """
+        Return the GraphiQL IDE HTML with two upstream bugs patched in-place.
+
+        **Bug 3 — trailing empty comment causes 404:**
+        The ``EXAMPLE_QUERY`` constant in ``graphiql.html`` ends with a lone
+        ``#`` comment line immediately before the closing backtick.  When a
+        user types a query after the default placeholder text, that bare ``#``
+        is included in the request body, causing the server to return a 404
+        instead of a GraphQL result.  The fix removes that trailing ``#\\n``
+        before the closing backtick.
+
+        **Bug 4 — ``locationQuery`` is undefined:**
+        The ``updateURL()`` function in ``graphiql.html`` calls
+        ``locationQuery(parameters)``, but ``locationQuery`` is never defined
+        anywhere in the file.  This raises a silent ``ReferenceError`` in the
+        browser console on every keystroke and prevents the address bar from
+        reflecting the current query (breaking URL sharing).  The fix replaces
+        the broken call with a self-contained URL-building implementation.
+        """
+        html = super().graphql_ide_html
+        # Fix 3: remove the trailing empty comment line from EXAMPLE_QUERY.
+        # That lone '#\n' before the closing backtick is included in requests
+        # typed after the default text, causing a 404 response.
+        html = html.replace('#\n`;\n', '`;\n', 1)
+        # Fix 4: locationQuery is never defined; replace with a working
+        # URL-building implementation so the address bar reflects the query.
+        html = html.replace(
+            'history.replaceState(null, null, locationQuery(parameters));',
+            'var p = Object.entries(parameters)'
+            '.filter(([,v]) => v !== undefined && v !== null && v !== "")'
+            '.map(([k,v]) => encodeURIComponent(k)+"="+encodeURIComponent(v))'
+            '.join("&");'
+            'history.replaceState(null, null,'
+            ' window.location.pathname + (p ? "?"+p : ""));',
+            1,
+        )
+        return html
 
     def render_graphql_ide(
         self, request: Request, request_data: GraphQLRequestData
@@ -61,6 +123,11 @@ class FixedGraphQLView(GraphQLView):
         - Pass ``operation_name`` (snake_case) to match the ``{{ operation_name }}``
           placeholder in ``graphiql.html`` instead of the mismatched camelCase
           ``operationName`` keyword used by the upstream view.
+        - Wrap each value with ``markupsafe.Markup`` so Jinja2 does not
+          HTML-escape the ``"`` quotes in the JSON strings.  Without this,
+          ``render_template_string`` auto-escapes ``"`` to ``&#34;``, which
+          produces invalid JavaScript whenever the page is reloaded with a
+          ``?query=...`` URL parameter (Bug 5).
 
         :param request:      The current Flask ``Request`` object.
         :param request_data: Parsed GraphQL request fields (query, variables,
@@ -69,10 +136,10 @@ class FixedGraphQLView(GraphQLView):
         """
         return render_template_string(
             self.graphql_ide_html,
-            query=json.dumps(request_data.query),
-            variables=json.dumps(request_data.variables),
+            query=Markup(json.dumps(request_data.query)),
+            variables=Markup(json.dumps(request_data.variables)),
             # snake_case matches {{ operation_name }} in graphiql.html
-            operation_name=json.dumps(request_data.operation_name),
+            operation_name=Markup(json.dumps(request_data.operation_name)),
         )
 
 
