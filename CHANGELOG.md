@@ -2,6 +2,22 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [2.0.4] - 2026-04-16
+
+### Bug Fixes
+
+#### GraphiQL Web Interface Fix — Preserve extra URL parameters (Issue #19)
+
+- **Fixed extra URL query parameters being dropped by `updateURL()`** — the
+  `locationQuery` replacement introduced in 2.0.3 built the address-bar URL
+  from scratch using only the GraphiQL-managed parameters (query, variables,
+  operationName), silently discarding any other parameters already present in
+  the URL (e.g. `api_key=12345` in `northwind/gql?api_key=12345`).  Fixed by
+  seeding the URL builder with `new URLSearchParams(window.location.search)`
+  so that non-GraphiQL parameters are preserved; GraphiQL-managed keys are
+  then set or deleted on top of the existing params before the URL is written
+  back via `history.replaceState`.
+
 ## [2.0.3] - 2026-04-16
 
 ### Bug Fixes
