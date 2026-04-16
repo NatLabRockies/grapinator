@@ -2,10 +2,12 @@
 
 Covers:
   - SecurityHeadersMiddleware : security response headers (svc_cherrypy.py)
-  - FixedGraphQLView          : the two bug-fixes for render_graphql_ide
+  - FixedGraphQLView          : bug-fixes for render_graphql_ide / graphql_ide_html
       Bug 1 — None rendered as JSON null (not Python 'None' string)
       Bug 2 — operation_name passed with snake_case key so the template
               {{operation_name}} is populated correctly
+      Bug 5 — json.dumps values must not be HTML-escaped by Jinja2
+              (would turn \" into &#34;, breaking JavaScript on page reload)
 """
 
 import os
@@ -328,14 +330,13 @@ class TestFixedGraphQLViewNullRendering(unittest.TestCase):
     def test_string_query_is_json_encoded(self):
         content = self._render(query='{ employees { name } }',
                                template='{{ query }}')
-        # json.dumps wraps the string in double-quotes; Jinja2 HTML-escapes them
-        self.assertEqual(html.unescape(content),
-                         json.dumps('{ employees { name } }'))
+        # Markup prevents auto-escaping, so content has raw quotes
+        self.assertEqual(content, json.dumps('{ employees { name } }'))
 
     def test_dict_variables_is_json_encoded(self):
         variables = {'first': 10}
         content = self._render(variables=variables, template='{{ variables }}')
-        self.assertEqual(json.loads(html.unescape(content)), variables)
+        self.assertEqual(json.loads(content), variables)
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +365,7 @@ class TestFixedGraphQLViewOperationNameKey(unittest.TestCase):
     def test_operation_name_template_var_is_populated(self):
         """The snake_case template variable must not be empty."""
         content = self._render_op_name('MyQuery')
-        # json.dumps('MyQuery') == '"MyQuery"'; Jinja2 HTML-escapes quotes
-        self.assertIn('MyQuery', html.unescape(content))
+        self.assertIn('MyQuery', content)
 
     def test_none_operation_name_renders_null_not_empty(self):
         content = self._render_op_name(None)
@@ -377,6 +377,69 @@ class TestFixedGraphQLViewOperationNameKey(unittest.TestCase):
         content = self._render_op_name('GetEmployees')
         self.assertNotEqual(content, '')
         self.assertNotEqual(content, 'null')
+
+
+# ---------------------------------------------------------------------------
+# FixedGraphQLView — Bug 5: no HTML-escaping of JSON template values
+# ---------------------------------------------------------------------------
+
+class TestFixedGraphQLViewNoHtmlEscaping(unittest.TestCase):
+    """Bug 5 fix: json.dumps values must reach the template as raw JavaScript
+    literals, not HTML-entity-encoded strings.
+
+    Flask's render_template_string enables Jinja2 auto-escaping.  Without
+    markupsafe.Markup the double-quote characters in json.dumps output are
+    turned into ``&#34;`` (or ``&quot;``), which is invalid JavaScript and
+    leaves the React root stuck on "Loading..." when the page is reloaded
+    with a ``?query=...`` URL parameter.
+    """
+
+    def _render_raw(self, query=None, variables=None, operation_name=None,
+                    template='{{query}}|{{variables}}|{{operation_name}}'):
+        request_data = MagicMock()
+        request_data.query          = query
+        request_data.variables      = variables
+        request_data.operation_name = operation_name
+
+        with patch.object(GraphQLView, 'graphql_ide_html',
+                          new_callable=PropertyMock, return_value=template):
+            view = object.__new__(FixedGraphQLView)
+            with app.test_request_context('/'):
+                result = view.render_graphql_ide(MagicMock(), request_data)
+        return result if isinstance(result, str) else result.get_data(as_text=True)
+
+    def test_string_query_contains_raw_quotes_not_entities(self):
+        """A string query must appear with raw " characters, not &#34;."""
+        content = self._render_raw(query='{ employees { name } }',
+                                   template='{{ query }}')
+        self.assertNotIn('&#34;', content)
+        self.assertNotIn('&quot;', content)
+        self.assertIn('"', content)
+
+    def test_dict_variables_contains_raw_quotes_not_entities(self):
+        content = self._render_raw(variables={'limit': 5},
+                                   template='{{ variables }}')
+        self.assertNotIn('&#34;', content)
+        self.assertNotIn('&quot;', content)
+
+    def test_string_operation_name_contains_raw_quotes_not_entities(self):
+        content = self._render_raw(operation_name='GetEmployees',
+                                   template='{{ operation_name }}')
+        self.assertNotIn('&#34;', content)
+        self.assertNotIn('&quot;', content)
+        self.assertIn('"', content)
+
+    def test_rendered_query_is_valid_json(self):
+        """The rendered query value must be parseable as JSON (valid JS literal)."""
+        query = '{ employees { firstName lastName } }'
+        content = self._render_raw(query=query, template='{{ query }}')
+        self.assertEqual(json.loads(content), query)
+
+    def test_rendered_variables_is_valid_json(self):
+        variables = {'city': 'Seattle', 'limit': 10}
+        content = self._render_raw(variables=variables,
+                                   template='{{ variables }}')
+        self.assertEqual(json.loads(content), variables)
 
 
 if __name__ == '__main__':

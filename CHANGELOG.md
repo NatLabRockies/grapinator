@@ -23,8 +23,17 @@ All notable changes to the GraphQL Integration Testing Suite.
   `graphql_ide_html` override by replacing the broken call with a
   self-contained `Object.entries`-based URL-building implementation.
 
-Both fixes are applied at runtime via the `graphql_ide_html` property override
-on `FixedGraphQLView` — no changes to the installed library are required.
+- **Fixed `"Loading..."` on page reload or shared URL** — when my fix for
+  the `locationQuery` bug (above) started writing `?query=...` into the
+  address bar, reloading the page caused Flask's `render_template_string` to
+  HTML-escape the `"` quotes in `json.dumps(request_data.query)` to `&#34;`.
+  The resulting JavaScript (`query: &#34;...&#34;`) was a `SyntaxError` that
+  silenced the entire `<script>` block and left the React root stuck on
+  "Loading...".  Fixed by wrapping every `json.dumps()` value passed to
+  `render_template_string` with `markupsafe.Markup`, which tells Jinja2 the
+  value is already safe HTML and should not be re-escaped.
+
+Both fixes are applied at runtime — no changes to the installed library are required. The `1` argument on each `replace()` call limits the substitution to the first match.
 
 ## [2.0.2] - 2026-03-25
 

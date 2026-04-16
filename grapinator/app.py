@@ -6,7 +6,7 @@ Flask application factory and entry point for the Grapinator GraphQL API.
 This module:
 
   1. Defines :class:`FixedGraphQLView`, a patched subclass of the upstream
-     ``GraphQLView`` that corrects four rendering bugs present in
+     ``GraphQLView`` that corrects five rendering bugs present in
      graphql-server 3.0.0.
   2. Creates and configures the Flask ``app`` instance, attaching the GraphQL
      endpoint from ``settings.FLASK_API_ENDPOINT``.
@@ -21,6 +21,7 @@ calling ``main()`` directly.
 
 import json
 from flask import Flask, Request, Response, render_template_string
+from markupsafe import Markup
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
 
@@ -58,6 +59,15 @@ class FixedGraphQLView(GraphQLView):
     ``locationQuery`` is never defined, causing a silent ``ReferenceError``
     on every keystroke and preventing URL sharing.  Fixed in the
     ``graphql_ide_html`` property.
+
+    **Bug 5 — Jinja2 HTML-escapes JSON values, breaking JavaScript (issue #19):**
+    Flask's ``render_template_string`` enables auto-escaping, so bare
+    ``json.dumps()`` strings have their ``"`` quotes turned into ``&#34;``
+    HTML entities.  This produces invalid JavaScript (``query: &#34;...&#34;``)
+    whenever the page is reloaded with ``?query=...`` in the URL, keeping the
+    React root stuck on "Loading...".  Fixed by wrapping all
+    ``json.dumps()`` values with ``markupsafe.Markup`` so Jinja2 skips the
+    HTML-escaping step.
     """
 
     @property
@@ -113,6 +123,11 @@ class FixedGraphQLView(GraphQLView):
         - Pass ``operation_name`` (snake_case) to match the ``{{ operation_name }}``
           placeholder in ``graphiql.html`` instead of the mismatched camelCase
           ``operationName`` keyword used by the upstream view.
+        - Wrap each value with ``markupsafe.Markup`` so Jinja2 does not
+          HTML-escape the ``"`` quotes in the JSON strings.  Without this,
+          ``render_template_string`` auto-escapes ``"`` to ``&#34;``, which
+          produces invalid JavaScript whenever the page is reloaded with a
+          ``?query=...`` URL parameter (Bug 5).
 
         :param request:      The current Flask ``Request`` object.
         :param request_data: Parsed GraphQL request fields (query, variables,
@@ -121,10 +136,10 @@ class FixedGraphQLView(GraphQLView):
         """
         return render_template_string(
             self.graphql_ide_html,
-            query=json.dumps(request_data.query),
-            variables=json.dumps(request_data.variables),
+            query=Markup(json.dumps(request_data.query)),
+            variables=Markup(json.dumps(request_data.variables)),
             # snake_case matches {{ operation_name }} in graphiql.html
-            operation_name=json.dumps(request_data.operation_name),
+            operation_name=Markup(json.dumps(request_data.operation_name)),
         )
 
 
