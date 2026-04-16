@@ -98,14 +98,18 @@ class FixedGraphQLView(GraphQLView):
         html = html.replace('#\n`;\n', '`;\n', 1)
         # Fix 4: locationQuery is never defined; replace with a working
         # URL-building implementation so the address bar reflects the query.
+        # Starts from the current search params so that non-GraphiQL parameters
+        # (e.g. api_key=…) passed in the original URL are preserved.
         html = html.replace(
             'history.replaceState(null, null, locationQuery(parameters));',
-            'var p = Object.entries(parameters)'
-            '.filter(([,v]) => v !== undefined && v !== null && v !== "")'
-            '.map(([k,v]) => encodeURIComponent(k)+"="+encodeURIComponent(v))'
-            '.join("&");'
-            'history.replaceState(null, null,'
-            ' window.location.pathname + (p ? "?"+p : ""));',
+            'var _sp = new URLSearchParams(window.location.search);'
+            'Object.entries(parameters).forEach(function(e){'
+            ' if(e[1]!==undefined&&e[1]!==null&&e[1]!==""){_sp.set(e[0],e[1]);}'
+            ' else{_sp.delete(e[0]);}'
+            '});'
+            'var _p=_sp.toString();'
+            'history.replaceState(null,null,'
+            ' window.location.pathname+(_p?"?"+_p:""));',
             1,
         )
         return html
