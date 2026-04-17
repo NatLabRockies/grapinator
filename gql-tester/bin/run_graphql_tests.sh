@@ -10,25 +10,36 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Locate project root relative to this script so it works from any PATH or
+# absolute invocation (e.g. /opt/tools/gql-tester/bin/run_graphql_tests.sh)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_DIR="$PROJECT_ROOT/venv"
+
 # Default values
 QUERY_FILE="integration_test_queries.md"
 CONFIG_FILE="test_config.yaml"
 ENDPOINTS_FILE="endpoints.json"
 
-# Determine Python executable
-if [[ -f "../venv/bin/python" ]]; then
-    PYTHON_CMD="../venv/bin/python"
-elif [[ -f "../venv/Scripts/python.exe" ]]; then
-    PYTHON_CMD="../venv/Scripts/python.exe"
+# Resolve Python from the project-local venv
+if [[ -f "$VENV_DIR/bin/python" ]]; then
+    PYTHON_CMD="$VENV_DIR/bin/python"
+elif [[ -f "$VENV_DIR/Scripts/python.exe" ]]; then
+    PYTHON_CMD="$VENV_DIR/Scripts/python.exe"
 else
-    PYTHON_CMD="python"
+    if [[ "$1" != "setup" ]]; then
+        echo -e "${RED}Error: Virtual environment not found at $VENV_DIR${NC}"
+        echo "Run '$(basename "$0") setup' first to create it."
+        exit 1
+    fi
+    PYTHON_CMD="python3"
 fi
 
 print_usage() {
     echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  setup                    Install test dependencies"
+    echo "  setup                    Install dependencies"
     echo "  single <endpoint>        Test single endpoint"
     echo "  compare <ep1> <ep2>      Compare two endpoints"
     echo "  multi                    Test multiple endpoints from config"
@@ -36,7 +47,7 @@ print_usage() {
     echo ""
     echo "Options:"
     echo "  -q, --queries FILE       Path to queries markdown file (default: $QUERY_FILE)"
-    echo "  -c, --config FILE        Path to test config file (default: $CONFIG_FILE)"  
+    echo "  -c, --config FILE        Path to test config file (default: $CONFIG_FILE)"
     echo "  -e, --endpoints FILE     Path to endpoints JSON file (default: $ENDPOINTS_FILE)"
     echo "  -o, --output FILE        Output file for results"
     echo "  -v, --verbose            Enable verbose logging"
@@ -49,68 +60,21 @@ print_usage() {
 }
 
 install_dependencies() {
-    echo -e "${YELLOW}Installing test dependencies...${NC}"
-    
-    if [ -f "requirements-test.txt" ]; then
-        pip install -r requirements-test.txt
-    else
-        echo "Installing dependencies directly..."
-        pip install requests deepdiff PyYAML
-    fi
-    
-    echo -e "${GREEN}Dependencies installed successfully${NC}"
+    echo -e "${YELLOW}Creating virtual environment at $VENV_DIR ...${NC}"
+    python3 -m venv "$VENV_DIR"
+    echo -e "${YELLOW}Installing dependencies into venv...${NC}"
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+    "$VENV_DIR/bin/pip" install -e "$PROJECT_ROOT"
+    echo -e "${GREEN}Setup complete. Virtual environment ready at $VENV_DIR${NC}"
 }
 
 create_sample_files() {
     echo -e "${YELLOW}Creating sample configuration files...${NC}"
-    
-    # Create sample endpoints file
-    cat > sample_endpoints.json << 'EOF'
-[
-  {
-    "name": "local",
-    "url": "http://localhost:8443/northwind/gql",
-    "description": "Local development server"
-  },
-  {
-    "name": "staging", 
-    "url": "https://api-staging.example.com/northwind/gql",
-    "description": "Staging environment"
-  },
-  {
-    "name": "production",
-    "url": "https://api.example.com/northwind/gql", 
-    "description": "Production environment"
-  }
-]
-EOF
 
-    # Create simple run script
-    cat > run_tests.sh << 'EOF'
-#!/bin/bash
-# Simple test execution script
+    $PYTHON_CMD -m gql_tester.comparison --create-sample-endpoints
 
-# Test single endpoint
-echo "Testing single endpoint..."
-python test_integration_queries.py \
-    --primary-endpoint "http://localhost:8443/northwind/gql" \
-    --output "single_endpoint_results.json"
-
-# Compare two endpoints (uncomment and modify URLs as needed)
-# echo "Comparing two endpoints..."
-# python test_integration_queries.py \
-#     --primary-endpoint "http://localhost:8443/northwind/gql" \
-#     --secondary-endpoint "http://localhost:8444/northwind/gql" \
-#     --output "comparison_results.json"
-
-echo "Test execution completed. Check the output files for results."
-EOF
-
-    chmod +x run_tests.sh
-    
     echo -e "${GREEN}Created sample files:${NC}"
     echo "  - sample_endpoints.json: Sample endpoint configurations"
-    echo "  - run_tests.sh: Simple test runner script"
     echo ""
     echo "Edit these files with your actual endpoint URLs before running tests."
 }
@@ -118,16 +82,16 @@ EOF
 run_single_endpoint_test() {
     local endpoint="$1"
     local output_file="${2:-single_test_results.json}"
-    
+
     echo -e "${YELLOW}Testing single endpoint: $endpoint${NC}"
-    
-    $PYTHON_CMD test_integration_queries.py \
+
+    $PYTHON_CMD -m gql_tester.integration \
         --primary-endpoint "$endpoint" \
         --query-file "$QUERY_FILE" \
         --config-file "$CONFIG_FILE" \
         --output "$output_file" \
         ${VERBOSE:+--verbose}
-    
+
     echo -e "${GREEN}Single endpoint test completed. Results saved to: $output_file${NC}"
 }
 
@@ -135,63 +99,41 @@ run_comparison_test() {
     local endpoint1="$1"
     local endpoint2="$2"
     local output_file="${3:-comparison_results.json}"
-    
+
     echo -e "${YELLOW}Comparing endpoints:${NC}"
     echo -e "  Primary: $endpoint1"
     echo -e "  Secondary: $endpoint2"
-    
-    $PYTHON_CMD test_integration_queries.py \
+
+    $PYTHON_CMD -m gql_tester.integration \
         --primary-endpoint "$endpoint1" \
         --secondary-endpoint "$endpoint2" \
         --query-file "$QUERY_FILE" \
         --config-file "$CONFIG_FILE" \
         --output "$output_file" \
         ${VERBOSE:+--verbose}
-    
+
     echo -e "${GREEN}Comparison test completed. Results saved to: $output_file${NC}"
 }
 
 run_multi_endpoint_test() {
     local output_file="${1:-multi_endpoint_results.json}"
-    
+
     if [ ! -f "$ENDPOINTS_FILE" ]; then
         echo -e "${RED}Error: Endpoints file '$ENDPOINTS_FILE' not found${NC}"
         echo "Run '$0 create-sample-config' to create a sample file."
         exit 1
     fi
-    
+
     echo -e "${YELLOW}Running multi-endpoint tests using: $ENDPOINTS_FILE${NC}"
-    
-    $PYTHON_CMD test_endpoint_comparison.py \
+
+    $PYTHON_CMD -m gql_tester.comparison \
         --config "$CONFIG_FILE" \
         --endpoints "$ENDPOINTS_FILE" \
         --queries "$QUERY_FILE" \
         --output "$output_file" \
         ${VERBOSE:+--verbose}
-    
-    echo -e "${GREEN}Multi-endpoint test completed. Results saved to: $output_file${NC}"
-}
 
-check_python_files() {
-    local missing_files=()
-    
-    if [ ! -f "test_integration_queries.py" ]; then
-        missing_files+=("test_integration_queries.py")
-    fi
-    
-    if [ ! -f "test_endpoint_comparison.py" ]; then
-        missing_files+=("test_endpoint_comparison.py")
-    fi
-    
-    if [ ${#missing_files[@]} -gt 0 ]; then
-        echo -e "${RED}Error: Missing required Python test files:${NC}"
-        for file in "${missing_files[@]}"; do
-            echo "  - $file"
-        done
-        echo ""
-        echo "Please ensure all test files are present in the current directory."
-        exit 1
-    fi
+    echo -e "${GREEN}Multi-endpoint test completed. Results saved to: $output_file${NC}"
 }
 
 # Parse command line arguments
@@ -250,7 +192,6 @@ case "$COMMAND" in
             echo "Usage: $0 single <endpoint_url>"
             exit 1
         fi
-        check_python_files
         run_single_endpoint_test "$1" "$OUTPUT_FILE"
         ;;
     compare)
@@ -259,11 +200,9 @@ case "$COMMAND" in
             echo "Usage: $0 compare <endpoint1> <endpoint2>"
             exit 1
         fi
-        check_python_files
         run_comparison_test "$1" "$2" "$OUTPUT_FILE"
         ;;
     multi)
-        check_python_files
         run_multi_endpoint_test "$OUTPUT_FILE"
         ;;
     create-sample-config)

@@ -2,11 +2,11 @@
 """
 Advanced GraphQL Endpoint Comparison Test Runner
 
-This script performs comprehensive testing between multiple GraphQL endpoints,
+This module performs comprehensive testing between multiple GraphQL endpoints,
 including schema validation, performance comparison, and data consistency checks.
 
 Usage:
-    python test_endpoint_comparison.py --config test_config.yaml --endpoints endpoints.json
+    python -m gql_tester.comparison --config test_config.yaml --endpoints endpoints.json
 """
 
 import argparse
@@ -24,8 +24,8 @@ from urllib.parse import urlparse
 import requests
 from deepdiff import DeepDiff
 
-from .test_integration_queries import (
-    QueryParser, GraphQLClient, QueryResult, 
+from .integration import (
+    QueryParser, GraphQLClient, QueryResult,
     ValidationResult, ComparisonResult, IntegrationTestSuite
 )
 
@@ -79,7 +79,6 @@ class AdvancedValidator:
         errors = []
         thresholds = self.config.get('performance_thresholds', {})
         
-        # Determine query type and appropriate threshold
         if 'All' in query_name or 'Large' in query_name:
             threshold = thresholds.get('max_large_dataset_time', 2000)
         elif any(rel in query_name.lower() for rel in ['with', 'details', 'complete']):
@@ -110,7 +109,6 @@ class AdvancedValidator:
         
         edges = main_collection.get('edges', [])
         
-        # Field validation - all items must have specific values
         field_validation = test_config.get('field_validation', {})
         for field, expected_value in field_validation.items():
             for edge in edges:
@@ -121,7 +119,6 @@ class AdvancedValidator:
                         f"got '{node.get(field)}' in item {node.get('product_id', 'unknown')}"
                     )
         
-        # Field comparison - numeric/date comparisons
         field_comparison = test_config.get('field_comparison', {})
         for field, comparison in field_comparison.items():
             operator = comparison['operator']
@@ -190,7 +187,7 @@ class AdvancedValidator:
             if current is None:
                 return False
             if isinstance(current, list) and current:
-                current = current[0]  # Check first item in list
+                current = current[0]
         
         return True
 
@@ -201,8 +198,8 @@ class EndpointComparator:
     def __init__(self, config: Dict):
         self.config = config
     
-    def compare_performance(self, query_name: str, result1: QueryResult, 
-                          result2: QueryResult) -> PerformanceComparison:
+    def compare_performance(self, query_name: str, result1: QueryResult,
+                            result2: QueryResult) -> PerformanceComparison:
         """Compare performance between two endpoints."""
         time_diff = abs(result1.response_time_ms - result2.response_time_ms)
         percent_diff = (time_diff / min(result1.response_time_ms, result2.response_time_ms)) * 100
@@ -223,19 +220,15 @@ class EndpointComparator:
         """Compare data using configuration rules."""
         ignore_fields = self.config.get('comparison_tests', {}).get('ignore_fields', [])
         
-        # Remove ignored fields from both datasets
         cleaned_data1 = self._remove_ignored_fields(data1, ignore_fields)
         cleaned_data2 = self._remove_ignored_fields(data2, ignore_fields)
         
-        # Different comparison strictness based on query type
         comparison_config = self.config.get('comparison_tests', {})
         flexible_queries = comparison_config.get('flexible_comparison_queries', [])
         
         if query_name in flexible_queries:
-            # More lenient comparison for flexible queries
             diff = DeepDiff(cleaned_data1, cleaned_data2, ignore_order=True, significant_digits=2)
         else:
-            # Strict comparison for exact match requirements
             diff = DeepDiff(cleaned_data1, cleaned_data2, ignore_order=True)
         
         return dict(diff) if diff else {}
@@ -305,7 +298,6 @@ class SchemaCompatibilityChecker:
                 introspection_errors=errors
             )
         
-        # Compare schemas
         schema_diff = DeepDiff(schema1_result.data, schema2_result.data, ignore_order=True)
         
         return SchemaCompatibilityResult(
@@ -354,28 +346,21 @@ class MultiEndpointTestSuite:
         
         start_time = time.time()
         
-        # 1. Check schema compatibility between all endpoint pairs
         logger.info("Checking schema compatibility between endpoints")
         self._check_all_schema_compatibility()
         
-        # 2. Execute queries on all endpoints
         logger.info("Executing queries on all endpoints")
         self._execute_queries_on_all_endpoints()
         
-        # 3. Performance comparison between endpoints
         logger.info("Comparing performance between endpoints")
         self._compare_performance_across_endpoints()
         
-        # 4. Data consistency validation
         logger.info("Validating data consistency across endpoints")
         data_consistency_results = self._validate_data_consistency()
         
         total_time = time.time() - start_time
         
-        # Generate comprehensive summary
-        summary = self._generate_comprehensive_summary(
-            total_time, data_consistency_results
-        )
+        summary = self._generate_comprehensive_summary(total_time, data_consistency_results)
         
         logger.info(f"Multi-endpoint test suite completed in {total_time:.2f}s")
         
@@ -405,7 +390,6 @@ class MultiEndpointTestSuite:
             client = GraphQLClient(endpoint_url)
             self.results[endpoint_name] = {}
             
-            # Execute queries concurrently for better performance
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_query = {
                     executor.submit(client.execute_query, query_info['query']): query_name
@@ -454,12 +438,11 @@ class MultiEndpointTestSuite:
             query_consistent = True
             query_inconsistencies = []
             
-            # Compare all pairs of endpoints for this query
             for ep1, ep2 in itertools.combinations(endpoint_names, 2):
                 consistency_results['endpoint_pairs_compared'] += 1
                 
-                if (query_name in self.results[ep1] and 
-                    query_name in self.results[ep2]):
+                if (query_name in self.results[ep1] and
+                        query_name in self.results[ep2]):
                     
                     result1 = self.results[ep1][query_name]
                     result2 = self.results[ep2][query_name]
@@ -467,7 +450,6 @@ class MultiEndpointTestSuite:
                     if result1.success and result2.success:
                         consistency_results['successful_comparisons'] += 1
                         
-                        # Compare data using configuration
                         differences = self.comparator.compare_data_with_config(
                             query_name, result1.data, result2.data
                         )
@@ -489,21 +471,17 @@ class MultiEndpointTestSuite:
         
         return consistency_results
     
-    def _generate_comprehensive_summary(self, total_time: float, 
-                                      consistency_results: Dict) -> Dict[str, Any]:
+    def _generate_comprehensive_summary(self, total_time: float,
+                                        consistency_results: Dict) -> Dict[str, Any]:
         """Generate comprehensive test results summary."""
-        
-        # Schema compatibility summary
         compatible_schemas = sum(1 for r in self.schema_compatibility_results if r.compatible)
         
-        # Performance analysis
         if self.performance_comparisons:
             avg_perf_diff = sum(p.performance_difference_percent for p in self.performance_comparisons) / len(self.performance_comparisons)
             max_perf_diff = max(p.performance_difference_percent for p in self.performance_comparisons)
         else:
             avg_perf_diff = max_perf_diff = 0
         
-        # Overall success rates
         endpoint_success_rates = {}
         for endpoint_name, results in self.results.items():
             success_count = sum(1 for r in results.values() if r.success)
@@ -537,8 +515,8 @@ class MultiEndpointTestSuite:
                 'average_performance_difference_percent': avg_perf_diff,
                 'maximum_performance_difference_percent': max_perf_diff,
                 'significant_performance_differences': [
-                    asdict(p) for p in self.performance_comparisons 
-                    if p.performance_difference_percent > 50  # More than 50% difference
+                    asdict(p) for p in self.performance_comparisons
+                    if p.performance_difference_percent > 50
                 ]
             },
             'data_consistency': consistency_results,
@@ -562,7 +540,7 @@ def create_sample_endpoints_file():
             "description": "Production GraphQL endpoint"
         },
         {
-            "name": "staging", 
+            "name": "staging",
             "url": "https://api.staging.com/graphql",
             "description": "Staging GraphQL endpoint"
         },
@@ -605,7 +583,6 @@ def main():
         return
     
     try:
-        # Initialize and run multi-endpoint test suite
         test_suite = MultiEndpointTestSuite(
             config_file=args.config,
             endpoints_file=args.endpoints,
@@ -614,13 +591,11 @@ def main():
         
         results = test_suite.run_comprehensive_tests()
         
-        # Save results
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2, default=str)
         
         logger.info(f"Results saved to {args.output}")
         
-        # Print summary
         print("\n" + "="*80)
         print("MULTI-ENDPOINT GRAPHQL TEST SUMMARY")
         print("="*80)
@@ -638,7 +613,6 @@ def main():
         print(f"Data Consistency: {consistency['consistent_queries']}/{consistency['total_queries']} queries")
         print(f"Avg Performance Difference: {performance['average_performance_difference_percent']:.1f}%")
         
-        # Print issues
         if schema['incompatible_pairs']:
             print(f"\nSCHEMA INCOMPATIBILITIES ({len(schema['incompatible_pairs'])}):")
             for pair in schema['incompatible_pairs']:
@@ -646,7 +620,7 @@ def main():
         
         if consistency['inconsistent_queries']:
             print(f"\nDATA INCONSISTENCIES ({len(consistency['inconsistent_queries'])}):")
-            for inconsistency in consistency['inconsistent_queries'][:5]:  # Show first 5
+            for inconsistency in consistency['inconsistent_queries'][:5]:
                 print(f"  ✗ {inconsistency['query_name']}")
         
         print("\n" + "="*80)
