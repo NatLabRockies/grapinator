@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-GraphQL Integration Test Suite for Northwind Database
+GraphQL Integration Test Suite
 
-This script executes GraphQL queries against one or more endpoints and validates results.
+This module executes GraphQL queries against one or more endpoints and validates results.
 It supports comparative testing between endpoints to ensure consistency.
 
 Usage:
-    python test_integration_queries.py --endpoint http://localhost:8443/northwind/gql
-    python test_integration_queries.py --primary http://localhost:8443/northwind/gql --secondary http://localhost:8444/northwind/gql
+    python -m gql_tester.integration --primary-endpoint http://localhost:8443/northwind/gql
+    python -m gql_tester.integration --primary-endpoint http://server1/gql --secondary-endpoint http://server2/gql
 """
 
 import argparse
@@ -234,16 +234,14 @@ class ResultValidator:
     
     def _use_default_config(self):
         """Fallback to hardcoded expected counts."""
-        # Expected counts for standard Northwind dataset
         self.expected_counts = {
             'GetAllEmployees': 9,
             'GetEmployeeById': 1,
             'GetAllCategories': 8,
-            'CustomersByCountry': 13,  # USA customers
+            'CustomersByCountry': 13,
             'AllRegions': 4,
             'AllShippers': 3,
         }
-        # Default performance thresholds
         self.performance_thresholds = {
             'max_simple_query_time': 100,
             'max_complex_query_time': 500,
@@ -260,7 +258,6 @@ class ResultValidator:
         """Validate a single query result."""
         validation_errors = []
         
-        # Check if query executed successfully
         if not result.success:
             validation_errors.append(f"Query failed: {result.errors}")
             return ValidationResult(
@@ -269,12 +266,10 @@ class ResultValidator:
                 validation_errors=validation_errors
             )
         
-        # Check response time performance
         threshold = self._get_performance_threshold(query_name)
         if result.response_time_ms > threshold:
             validation_errors.append(f"Query too slow: {result.response_time_ms:.1f}ms > {threshold}ms")
         
-        # Validate data structure
         if not result.data:
             if query_name not in self.EMPTY_RESULT_QUERIES:
                 validation_errors.append("No data returned")
@@ -284,7 +279,6 @@ class ResultValidator:
                 validation_errors=validation_errors
             )
         
-        # Get the main collection from the result
         main_collection = self._extract_main_collection(result.data)
         if not main_collection:
             validation_errors.append("Could not find main data collection in result")
@@ -294,7 +288,6 @@ class ResultValidator:
                 validation_errors=validation_errors
             )
         
-        # Count validation
         actual_count = len(main_collection.get('edges', []))
         expected_count = self.expected_counts.get(query_name)
         
@@ -303,12 +296,10 @@ class ResultValidator:
                 f"Count mismatch: expected {expected_count}, got {actual_count}"
             )
         
-        # Specific content validation
         if query_name in self.NANCY_DAVOLIO_QUERIES:
             if not self._validate_nancy_davolio(main_collection):
                 validation_errors.append("Expected Nancy Davolio not found")
         
-        # Empty result validation
         if query_name in self.EMPTY_RESULT_QUERIES:
             if actual_count > 0:
                 validation_errors.append(f"Expected empty result, got {actual_count} items")
@@ -323,18 +314,12 @@ class ResultValidator:
     
     def _get_performance_threshold(self, query_name: str) -> float:
         """Get appropriate performance threshold based on query type."""
-        # Determine query complexity based on name patterns
         query_lower = query_name.lower()
         
-        # Large dataset queries - use max_large_dataset_time
         if any(pattern in query_lower for pattern in ['all', 'orders', 'large', 'unshipped']):
             return self.performance_thresholds.get('max_large_dataset_time', 2000)
-        
-        # Complex relationship queries - use max_complex_query_time  
         elif any(pattern in query_lower for pattern in ['with', 'complete', 'details', 'chain', 'history']):
             return self.performance_thresholds.get('max_complex_query_time', 500)
-        
-        # Simple queries - use max_simple_query_time
         else:
             return self.performance_thresholds.get('max_simple_query_time', 100)
     
@@ -343,7 +328,6 @@ class ResultValidator:
         if not data:
             return None
         
-        # Find the first collection-like field (should have edges)
         for key, value in data.items():
             if isinstance(value, dict) and 'edges' in value:
                 return value
@@ -372,7 +356,6 @@ class EndpointComparator:
                        secondary_result: QueryResult) -> ComparisonResult:
         """Compare results from two endpoints."""
         
-        # If both failed, they match in failure
         if not primary_result.success and not secondary_result.success:
             return ComparisonResult(
                 query_name=query_name,
@@ -381,7 +364,6 @@ class EndpointComparator:
                 secondary_endpoint=self.secondary_endpoint
             )
         
-        # If one succeeded and one failed, they don't match
         if primary_result.success != secondary_result.success:
             return ComparisonResult(
                 query_name=query_name,
@@ -394,15 +376,13 @@ class EndpointComparator:
                 }}
             )
         
-        # Both succeeded, compare data
         if primary_result.success and secondary_result.success:
             return self._compare_data(
-                query_name, 
-                primary_result.data, 
+                query_name,
+                primary_result.data,
                 secondary_result.data
             )
         
-        # Fallback
         return ComparisonResult(
             query_name=query_name,
             endpoints_match=False,
@@ -413,11 +393,8 @@ class EndpointComparator:
     def _compare_data(self, query_name: str, primary_data: Dict, 
                      secondary_data: Dict) -> ComparisonResult:
         """Compare the actual data from two successful responses."""
-        
-        # Use DeepDiff for detailed comparison
         diff = DeepDiff(primary_data, secondary_data, ignore_order=True)
         
-        # Count items for comparison
         primary_count = self._count_items(primary_data)
         secondary_count = self._count_items(secondary_data)
         
@@ -463,12 +440,10 @@ class IntegrationTestSuite:
     
     def _get_queries_for_comparison(self) -> Dict[str, Any]:
         """Get the list of queries to execute for endpoint comparison based on config."""
-        # Check if identical_result_queries is configured
         comparison_config = self.validator.config.get('comparison_tests', {})
         identical_queries = comparison_config.get('identical_result_queries', [])
         
         if identical_queries:
-            # Filter queries to only include the specified ones
             filtered_queries = {}
             for query_name in identical_queries:
                 if query_name in self.query_parser.queries:
@@ -477,7 +452,6 @@ class IntegrationTestSuite:
                     logger.warning(f"Query '{query_name}' specified in identical_result_queries but not found in query file")
             return filtered_queries
         else:
-            # Return all queries if no filter is configured
             return self.query_parser.queries
 
     def run_tests(self) -> Dict[str, Any]:
@@ -486,44 +460,32 @@ class IntegrationTestSuite:
         
         start_time = time.time()
         
-        # Execute queries on primary endpoint
         logger.info(f"Executing {len(self.query_parser.queries)} queries on primary endpoint")
         self._execute_queries_on_endpoint(self.primary_client, self.primary_results)
         
-        # Execute queries on secondary endpoint if provided
         if self.secondary_client:
-            # For comparison tests, use filtered query set if configured
             queries_to_compare = self._get_queries_for_comparison()
             logger.info(f"Executing {len(queries_to_compare)} queries on secondary endpoint for comparison")
             self._execute_queries_on_endpoint(self.secondary_client, self.secondary_results, queries_to_compare)
         
-        # Validate primary results
         logger.info("Validating query results")
         self._validate_results()
         
-        # Compare endpoints if both available
         if self.comparator and self.secondary_results:
             logger.info("Comparing results between endpoints")
             self._compare_endpoints()
         
         total_time = time.time() - start_time
         
-        # Generate summary
         summary = self._generate_summary(total_time)
         
         logger.info(f"Test suite completed in {total_time:.2f}s")
         
         return summary
     
-    def _execute_queries_on_endpoint(self, client: GraphQLClient, results_dict: Dict[str, QueryResult], 
-                                   queries_to_run: Optional[Dict[str, Any]] = None):
-        """Execute queries on a specific endpoint.
-        
-        Args:
-            client: The GraphQL client to use
-            results_dict: Dictionary to store results
-            queries_to_run: Optional dict of queries to run, defaults to all queries
-        """
+    def _execute_queries_on_endpoint(self, client: GraphQLClient, results_dict: Dict[str, QueryResult],
+                                     queries_to_run: Optional[Dict[str, Any]] = None):
+        """Execute queries on a specific endpoint."""
         if queries_to_run is None:
             queries_to_run = self.query_parser.queries
             
@@ -568,18 +530,14 @@ class IntegrationTestSuite:
     
     def _generate_summary(self, total_time: float) -> Dict[str, Any]:
         """Generate comprehensive test summary."""
-        
-        # Primary endpoint stats
         primary_success_count = sum(1 for r in self.primary_results.values() if r.success)
         primary_avg_time = (
             sum(r.response_time_ms for r in self.primary_results.values()) / len(self.primary_results)
             if self.primary_results else 0.0
         )
         
-        # Validation stats
         validation_pass_count = sum(1 for v in self.validation_results.values() if v.passed)
         
-        # Comparison stats (if available)
         comparison_match_count = 0
         if self.comparison_results:
             comparison_match_count = sum(1 for c in self.comparison_results.values() if c.endpoints_match)
@@ -617,7 +575,6 @@ class IntegrationTestSuite:
             }
         }
         
-        # Add secondary endpoint data if available
         if self.secondary_client:
             secondary_success_count = sum(1 for r in self.secondary_results.values() if r.success)
             secondary_avg_time = (
@@ -654,8 +611,6 @@ class IntegrationTestSuite:
             summary['detailed_results']['comparison_results'] = {
                 name: asdict(result) for name, result in self.comparison_results.items()
             }
-            
-            # Add secondary endpoint results to detailed output
             summary['detailed_results']['secondary_query_results'] = {
                 name: asdict(result) for name, result in self.secondary_results.items()
             }
@@ -668,7 +623,7 @@ def main():
     parser = argparse.ArgumentParser(description='GraphQL Integration Test Suite')
     parser.add_argument('--query-file', '-f', default='integration_test_queries.md',
                         help='Path to markdown file containing queries')
-    parser.add_argument('--config-file', '-c', default='test_config.yaml', 
+    parser.add_argument('--config-file', '-c', default='test_config.yaml',
                         help='Path to YAML configuration file')
     parser.add_argument('--primary-endpoint', '-p', required=True,
                         help='Primary GraphQL endpoint URL')
@@ -685,7 +640,6 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     
     try:
-        # Initialize and run test suite
         test_suite = IntegrationTestSuite(
             query_file=args.query_file,
             primary_endpoint=args.primary_endpoint,
@@ -695,13 +649,11 @@ def main():
         
         results = test_suite.run_tests()
         
-        # Save results to file
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2, default=str)
         
         logger.info(f"Results saved to {args.output}")
         
-        # Print summary
         print("\n" + "="*80)
         print("GRAPHQL INTEGRATION TEST SUMMARY")
         print("="*80)
@@ -712,12 +664,10 @@ def main():
         print(f"Total Queries: {execution['total_queries']}")
         print(f"Execution Time: {execution['total_execution_time']:.2f}s")
         
-        # Primary endpoint stats
         print(f"\nPrimary Endpoint: {execution['primary_endpoint']}")
         print(f"  Success Rate: {execution['primary_success_rate']:.1f}%")
         print(f"  Avg Response Time: {execution['primary_avg_response_time_ms']:.1f}ms")
         
-        # Secondary endpoint stats (if available)
         if 'secondary_endpoint' in execution:
             print(f"\nSecondary Endpoint: {execution['secondary_endpoint']}")
             print(f"  Success Rate: {execution['secondary_success_rate']:.1f}%")
@@ -729,7 +679,6 @@ def main():
             comparison = results['comparison_summary']
             print(f"Endpoint Match Rate: {comparison['match_rate']:.1f}%")
         
-        # Print failed tests
         if validation['failed_validations']:
             print(f"\nFAILED VALIDATIONS ({len(validation['failed_validations'])}):")
             for failure in validation['failed_validations']:
@@ -742,7 +691,6 @@ def main():
         
         print("\n" + "="*80)
         
-        # Exit with error code if tests failed
         total_failures = len(validation['failed_validations'])
         if 'comparison_summary' in results:
             total_failures += len(results['comparison_summary']['mismatched_queries'])

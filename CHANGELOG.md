@@ -2,6 +2,25 @@
 
 All notable changes to the GraphQL Integration Testing Suite.
 
+## [Unreleased]
+
+### Added
+
+#### GraphQL Integration Test Runner sub-project (Issue #22)
+
+- Added `gql-tester/` as a self-contained sub-project providing a standalone
+  GraphQL endpoint integration test runner that can be deployed independently
+  on any server or developer desktop.
+- `gql-tester/bin/run_graphql_tests.sh` is the single entry point; invoke by
+  absolute path or by adding `bin/` to PATH.
+- `run_graphql_tests.sh setup` creates a project-local virtual environment
+  under `gql-tester/venv/` and installs all dependencies — nothing is written
+  to the system or base Python installation.
+- Supports `single`, `compare`, and `multi` test modes against any Grapinator
+  GraphQL endpoint.
+- Removed integration test runner files from `tests/` — that directory now
+  contains only pytest unit tests.
+
 ## [2.0.4] - 2026-04-16
 
 ### Bug Fixes
