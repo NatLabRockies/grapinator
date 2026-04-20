@@ -2,7 +2,14 @@ import sys
 import os
 from os import path
 import logging.config
+from importlib.metadata import version, PackageNotFoundError
 from grapinator.settings import Settings, SchemaSettings
+
+try:
+    __version__ = version('grapinator')
+except PackageNotFoundError:
+    # Running from source tree without installation
+    __version__ = 'unknown'
 
 # Setup logging before any sub-module imports so the hierarchy is in place
 # immediately.  disable_existing_loggers=False preserves child loggers
