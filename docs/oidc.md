@@ -30,28 +30,99 @@ notation for `AUTH_ROLES_CLAIM`.
 
 ```ini
 [AUTH]
-AUTH_MODE        = required
-AUTH_JWKS_URI    = https://keycloak.example.com/realms/myrealm/protocol/openid-connect/certs
-AUTH_ISSUER      = https://keycloak.example.com/realms/myrealm
-AUTH_AUDIENCE    = grapinator
-AUTH_ALGORITHMS  = RS256
-AUTH_ROLES_CLAIM = realm_access.roles
+AUTH_MODE         = mixed
+AUTH_JWKS_URI     = https://keycloak.example.com/realms/grapinator-dev/protocol/openid-connect/certs
+AUTH_ISSUER       = https://keycloak.example.com/realms/grapinator-dev
+AUTH_AUDIENCE     = grapinator-api
+AUTH_ALGORITHMS   = RS256
+AUTH_ROLES_CLAIM  = realm_access.roles
+GRAPHIQL_ACCESS   = open
 ```
 
-For local development with the Docker Compose stack in `docker/keycloak.yaml`:
+### Manual setup with Docker
+
+If you prefer to configure Keycloak by hand instead of using the compose stack:
+
+#### 1. Start Keycloak
+
+```bash
+docker run -d \
+  --name keycloak-dev \
+  -p 8080:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:26.1 \
+  start-dev
+```
+
+Wait ~20 seconds. Open http://localhost:8080/admin and log in as `admin` / `admin`.
+
+#### 2. Create a Realm
+
+1. Top-left dropdown → **Create realm**
+2. **Realm name**: `grapinator-dev` → **Create**
+
+#### 3. Create a Client
+
+1. Left nav → **Clients** → **Create client**
+2. **Client type**: OpenID Connect, **Client ID**: `grapinator-api` → **Next**
+3. **Client authentication**: ON → **Next** → **Save**
+4. **Credentials** tab → copy the **Client secret**
+
+#### 4. Create Realm Roles
+
+Left nav → **Realm roles** → **Create role**: `hr` → **Save**.  Repeat for `admin`.
+
+#### 5. Assign Role to Service Account
+
+Left nav → **Clients** → `grapinator-api` → **Service accounts roles** tab →
+**Assign role** → filter by Realm roles → select `hr` → **Assign**
+
+#### 6. Verify
+
+```bash
+curl -s http://localhost:8080/realms/grapinator-dev/.well-known/openid-configuration \
+  | python3 -m json.tool | grep -E '"issuer"|"jwks_uri"'
+```
+
+Expected:
+```
+"issuer": "http://localhost:8080/realms/grapinator-dev",
+"jwks_uri": "http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/certs",
+```
+
+#### 7. Configure grapinator_rbac_keycloakdev.ini
+
+The `[AUTH]` section should read:
 
 ```ini
 [AUTH]
-AUTH_MODE        = required
-AUTH_JWKS_URI    = http://localhost:8080/realms/dev/protocol/openid-connect/certs
-AUTH_ISSUER      = http://localhost:8080/realms/dev
-AUTH_AUDIENCE    = grapinator
-AUTH_ALGORITHMS  = RS256
-AUTH_ROLES_CLAIM = realm_access.roles
+AUTH_MODE         = mixed
+AUTH_JWKS_URI     = http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/certs
+AUTH_ISSUER       = http://localhost:8080/realms/grapinator-dev
+AUTH_AUDIENCE     = grapinator-api
+AUTH_ALGORITHMS   = RS256
+AUTH_ROLES_CLAIM  = realm_access.roles
+GRAPHIQL_ACCESS   = open
 ```
 
-See [docker/keycloak.yaml](../docker/keycloak.yaml) for the Docker Compose stack that spins up
-a pre-configured Keycloak instance with a `dev` realm and a `grapinator` client.
+> Do **not** set `AUTH_DEV_SECRET` when `AUTH_JWKS_URI` is configured.
+
+### Automated local setup (Docker Compose)
+
+The compose stack in `docker/keycloak.yaml` automates all of the above.  It imports
+`docker/resources/keycloak-realm.json` on first start, which pre-creates the
+`grapinator-dev` realm, `grapinator-api` client (`client_secret = grapinator-api-secret`),
+`hr` and `admin` realm roles, and two test users:
+
+| Username | Password | Roles |
+|----------|----------|-------|
+| `hruser` | `hruser` | `hr` |
+| `admin`  | `admin`  | `hr`, `admin` |
+
+```bash
+docker compose -f docker/keycloak.yaml up -d
+```
 
 ---
 
@@ -146,3 +217,101 @@ role-restricted fields return `null` when the caller lacks the required role.
 
 See [grapinator_rbac.ini](../grapinator/resources/grapinator_rbac.ini) and
 [schema_docs.md](schema_docs.md) for the full RBAC configuration reference.
+
+### Testing RBAC with the local Keycloak Docker container
+
+The examples below assume the compose stack from `docker/keycloak.yaml` is running and
+Grapinator is started with the RBAC ini file:
+
+```bash
+docker compose -f docker/keycloak.yaml up -d
+GRAPINATOR_CONFIG=/resources/grapinator_rbac_keycloakdev.ini python grapinator/svc_cherrypy.py
+```
+
+The `birth_date` field in the Northwind schema is restricted to the `hr` role.
+
+#### Password grant (test user credentials)
+
+First, verify Keycloak is ready and the realm was imported:
+
+```bash
+curl -s http://localhost:8080/realms/grapinator-dev \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('realm','not found'))"
+# Expected output: grapinator-dev
+```
+
+If the realm is not found, Keycloak may still be starting.  Wait a few seconds and retry, or
+check `docker compose -f docker/keycloak.yaml logs keycloak`.
+
+> **Troubleshooting — `"error": "invalid_grant", "error_description": "Account is not fully set up"`**
+> Keycloak has attached required actions (e.g. verify email) to the user on import.  The fix
+> is already applied in `docker/resources/keycloak-realm.json` (`"requiredActions": []`).
+> If you have an existing container, destroy it and recreate so the updated realm JSON is re-imported:
+> ```bash
+> docker compose -f docker/keycloak.yaml down -v
+> docker compose -f docker/keycloak.yaml up -d
+> ```
+
+Once the realm is confirmed, obtain a token and query:
+
+```bash
+# Check the raw token response first (shows any error details)
+curl -s -X POST \
+    http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/token \
+    -d "client_id=grapinator-api" \
+    -d "client_secret=grapinator-api-secret" \
+    -d "username=hruser" \
+    -d "password=hruser" \
+    -d "grant_type=password"
+
+# If the response contains "access_token", extract it and query Grapinator
+TOKEN=$(curl -s -X POST \
+    http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/token \
+    -d "client_id=grapinator-api" \
+    -d "client_secret=grapinator-api-secret" \
+    -d "username=hruser" \
+    -d "password=hruser" \
+    -d "grant_type=password" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token') or d)")
+
+curl -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{ employees { edges { node { employee_id first_name birth_date} } } }"}' \
+    http://localhost:8443/northwind/gql
+```
+
+Expected: `birth_date` contains real values because `hruser` carries the `hr` role.
+
+#### No token (mixed mode)
+
+```bash
+curl -H "Content-Type: application/json" \
+    -d '{"query":"{ employees { edges { node { employee_id first_name birth_date} } } }"}' \
+    http://localhost:8443/northwind/gql
+```
+
+Expected: `birth_date` is `null` for every node — the field is restricted and no role was presented.
+
+#### Client credentials grant (service account)
+
+The `grapinator-api` service account has the `hr` role assigned (step 5 of the manual setup).
+
+```bash
+TOKEN=$(curl -s -X POST \
+    http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/token \
+    -d "client_id=grapinator-api" \
+    -d "client_secret=grapinator-api-secret" \
+    -d "grant_type=client_credentials" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+curl -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{ employees { edges { node { employee_id first_name birth_date} } } }"}' \
+    http://localhost:8443/northwind/gql
+```
+
+#### Inspect the decoded token (optional)
+
+```bash
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool | grep -A5 realm_access
+```

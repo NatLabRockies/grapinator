@@ -25,25 +25,60 @@ All notable changes to Grapinator
 
 ### Added
 
-- **OIDC provider configuration guide** (`docs/oidc.md`) — new documentation
+- **OIDC provider configuration guide** (`docs/oidc.md`) — documentation
   with a settings reference table and dedicated configuration sections for
   Keycloak, Azure Entra ID, Auth0, Okta, and local development (HS256 dev
-  secret).  Replaces the previous generic options list with provider-specific
-  `[AUTH]` ini examples including correct JWKS URIs, issuer values, audience,
-  and roles-claim paths for each provider.
+  secret).  Includes provider-specific `[AUTH]` ini examples with correct
+  JWKS URIs, issuer values, audience, and roles-claim paths for each provider.
+
+- **Keycloak RBAC testing examples** (`docs/oidc.md`) — new "Testing RBAC
+  with the local Keycloak Docker container" section with working `curl`
+  examples for password grant (test user credentials), unauthenticated
+  (mixed mode), and client credentials (service account) flows against the
+  Northwind `birth_date` hr-restricted field.  Includes a realm readiness
+  check, raw response diagnostic step, and token inspection one-liner.
 
 - **Keycloak Docker Compose stack** (`docker/keycloak.yaml`) — single-command
   local Keycloak instance (`docker compose -f docker/keycloak.yaml up -d`)
-  running Keycloak 24 in dev mode.  Imports the `dev` realm on first start,
-  pre-creates a `grapinator` client with a known client secret, `reader` and
-  `admin` realm roles, and two test users with matching credentials.  Includes
-  a healthcheck that waits for the realm OIDC discovery endpoint before
+  running Keycloak 26.1 in dev mode.  Imports the `grapinator-dev` realm on
+  first start via `docker/resources/keycloak-realm.json`.  Includes a
+  healthcheck that waits for the realm OIDC discovery endpoint before
   reporting healthy.
 
 - **Keycloak realm import file** (`docker/resources/keycloak-realm.json`) —
-  realm definition consumed by the Compose stack; defines the `dev` realm,
-  `grapinator` client, realm roles, and test users so the developer
-  environment is fully reproducible without manual Keycloak configuration.
+  realm definition consumed by the Compose stack; defines the `grapinator-dev`
+  realm, `grapinator-api` client (secret `grapinator-api-secret`), `hr` and
+  `admin` realm roles, and two test users (`hruser`/`hruser` with `hr` role,
+  `admin`/`admin` with `hr` and `admin` roles).
+
+- **Keycloak local dev ini file** (`grapinator/resources/grapinator_rbac_keycloakdev.ini`)
+  — ready-to-use ini file for RBAC testing against the local Keycloak Docker
+  container.  Configures `AUTH_MODE = mixed`, JWKS URI, issuer, and audience
+  pointing at `localhost:8080/realms/grapinator-dev`, with `GRAPHIQL_ACCESS = open`
+  for convenient browser-based testing.
+
+### Fixed
+
+- **Keycloak realm import: users blocked by required actions** —
+  `docker/resources/keycloak-realm.json` now includes an explicit
+  `requiredActions` array at the realm level with all default actions set to
+  `"defaultAction": false`.  Without this, Keycloak applied `VERIFY_EMAIL`
+  to imported users, causing `invalid_grant / Account is not fully set up`
+  on every password-grant token request.  User objects also carry
+  `"requiredActions": []` to prevent any per-user actions being attached on
+  import.
+
+- **Keycloak access tokens missing `aud` claim** — added an `oidc-audience-mapper`
+  protocol mapper to the `grapinator-api` client in `keycloak-realm.json`.
+  Keycloak does not include the client ID in `aud` by default; without the
+  mapper every token was rejected by Grapinator with
+  `MissingRequiredClaimError: Token is missing the "aud" claim`.
+
+- **Keycloak Compose stack and realm file aligned to canonical names** —
+  updated realm (`dev` → `grapinator-dev`), client ID (`grapinator` →
+  `grapinator-api`), client secret, roles (`reader` → `hr`), and test user
+  (`reader` → `hruser`) to match the values documented in `docs/oidc.md` and
+  used by `grapinator_rbac_keycloakdev.ini`.
 
 ### Security
 

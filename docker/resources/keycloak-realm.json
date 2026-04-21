@@ -1,46 +1,69 @@
 {
-  "realm": "dev",
+  "realm": "grapinator-dev",
   "enabled": true,
   "displayName": "Grapinator Dev",
   "sslRequired": "none",
   "registrationAllowed": false,
+  "requiredActions": [
+    {"alias": "VERIFY_EMAIL",        "name": "Verify Email",        "providerId": "VERIFY_EMAIL",        "enabled": true,  "defaultAction": false, "priority": 50,   "config": {}},
+    {"alias": "UPDATE_PROFILE",      "name": "Update Profile",      "providerId": "update_profile",      "enabled": true,  "defaultAction": false, "priority": 40,   "config": {}},
+    {"alias": "CONFIGURE_TOTP",      "name": "Configure OTP",       "providerId": "CONFIGURE_TOTP",      "enabled": true,  "defaultAction": false, "priority": 10,   "config": {}},
+    {"alias": "UPDATE_PASSWORD",     "name": "Update Password",     "providerId": "UPDATE_PASSWORD",     "enabled": true,  "defaultAction": false, "priority": 30,   "config": {}},
+    {"alias": "terms_and_conditions","name": "Terms and Conditions","providerId": "terms_and_conditions","enabled": false, "defaultAction": false, "priority": 20,   "config": {}},
+    {"alias": "update_user_locale",  "name": "Update User Locale",  "providerId": "update_user_locale",  "enabled": true,  "defaultAction": false, "priority": 1000, "config": {}}
+  ],
   "clients": [
     {
-      "clientId": "grapinator",
+      "clientId": "grapinator-api",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "secret": "grapinator-secret",
+      "secret": "grapinator-api-secret",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
       "authorizationServicesEnabled": false,
       "redirectUris": ["*"],
-      "webOrigins": ["*"]
+      "webOrigins": ["*"],
+      "protocolMappers": [
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "grapinator-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "roles": {
     "realm": [
-      { "name": "reader", "description": "Read-only access to GraphQL fields" },
-      { "name": "admin",  "description": "Full access to all GraphQL fields" }
+      { "name": "hr",    "description": "HR data access" },
+      { "name": "admin", "description": "Full access to all GraphQL fields" }
     ]
   },
   "users": [
     {
-      "username": "reader",
+      "username": "hruser",
       "enabled": true,
+      "requiredActions": [],
       "credentials": [
-        { "type": "password", "value": "reader", "temporary": false }
+        { "type": "password", "value": "hruser", "temporary": false }
       ],
-      "realmRoles": ["reader"]
+      "realmRoles": ["hr"]
     },
     {
       "username": "admin",
       "enabled": true,
+      "requiredActions": [],
       "credentials": [
         { "type": "password", "value": "admin", "temporary": false }
       ],
-      "realmRoles": ["reader", "admin"]
+      "realmRoles": ["hr", "admin"]
     }
   ]
 }

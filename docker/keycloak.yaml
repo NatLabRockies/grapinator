@@ -7,21 +7,22 @@
 #   docker compose -f docker/keycloak.yaml up -d
 #
 # Keycloak admin console: http://localhost:8080  (admin / admin)
-# Realm:                  dev
-# Client ID:              grapinator
-# Client secret:          grapinator-secret
+# Realm:                  grapinator-dev
+# Client ID:              grapinator-api
+# Client secret:          grapinator-api-secret
 #
-# Test users (realm: dev)
-#   username: reader    password: reader    roles: reader
-#   username: admin     password: admin     roles: reader, admin
+# Test users (realm: grapinator-dev)
+#   username: hruser    password: hruser    roles: hr
+#   username: admin     password: admin     roles: hr, admin
 #
-# Corresponding grapinator.ini [AUTH] block:
-#   AUTH_MODE        = required
-#   AUTH_JWKS_URI    = http://localhost:8080/realms/dev/protocol/openid-connect/certs
-#   AUTH_ISSUER      = http://localhost:8080/realms/dev
-#   AUTH_AUDIENCE    = grapinator
-#   AUTH_ALGORITHMS  = RS256
-#   AUTH_ROLES_CLAIM = realm_access.roles
+# Corresponding grapinator_rbac_keycloakdev.ini [AUTH] block:
+#   AUTH_MODE         = mixed
+#   AUTH_JWKS_URI     = http://localhost:8080/realms/grapinator-dev/protocol/openid-connect/certs
+#   AUTH_ISSUER       = http://localhost:8080/realms/grapinator-dev
+#   AUTH_AUDIENCE     = grapinator-api
+#   AUTH_ALGORITHMS   = RS256
+#   AUTH_ROLES_CLAIM  = realm_access.roles
+#   GRAPHIQL_ACCESS   = open
 
 services:
   keycloak:
@@ -38,7 +39,7 @@ services:
       test:
         - CMD-SHELL
         - |
-          curl -sf http://localhost:8080/realms/dev/.well-known/openid-configuration \
+          curl -sf http://localhost:8080/realms/grapinator-dev/.well-known/openid-configuration \
             > /dev/null
       interval: 15s
       timeout: 5s
