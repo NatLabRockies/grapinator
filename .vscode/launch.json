@@ -20,6 +20,15 @@
             }
         },
         {
+            "name": "Python: Run grapinator (RBAC keycloak dev)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
+            "env": {
+                "GRAPINATOR_CONFIG": "/resources/grapinator_rbac_keycloakdev.ini"
+            }
+        },
+        {
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
