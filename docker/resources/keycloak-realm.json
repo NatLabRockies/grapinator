@@ -1,0 +1,46 @@
+{
+  "realm": "dev",
+  "enabled": true,
+  "displayName": "Grapinator Dev",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "clients": [
+    {
+      "clientId": "grapinator",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "grapinator-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "reader", "description": "Read-only access to GraphQL fields" },
+      { "name": "admin",  "description": "Full access to all GraphQL fields" }
+    ]
+  },
+  "users": [
+    {
+      "username": "reader",
+      "enabled": true,
+      "credentials": [
+        { "type": "password", "value": "reader", "temporary": false }
+      ],
+      "realmRoles": ["reader"]
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "credentials": [
+        { "type": "password", "value": "admin", "temporary": false }
+      ],
+      "realmRoles": ["reader", "admin"]
+    }
+  ]
+}

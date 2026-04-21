@@ -1,0 +1,46 @@
+# Docker Compose stack for local Keycloak development
+#
+# Starts a Keycloak instance in dev mode with a pre-configured realm, client,
+# and test users suitable for developing against Grapinator's [AUTH] settings.
+#
+# Usage:
+#   docker compose -f docker/keycloak.yaml up -d
+#
+# Keycloak admin console: http://localhost:8080  (admin / admin)
+# Realm:                  dev
+# Client ID:              grapinator
+# Client secret:          grapinator-secret
+#
+# Test users (realm: dev)
+#   username: reader    password: reader    roles: reader
+#   username: admin     password: admin     roles: reader, admin
+#
+# Corresponding grapinator.ini [AUTH] block:
+#   AUTH_MODE        = required
+#   AUTH_JWKS_URI    = http://localhost:8080/realms/dev/protocol/openid-connect/certs
+#   AUTH_ISSUER      = http://localhost:8080/realms/dev
+#   AUTH_AUDIENCE    = grapinator
+#   AUTH_ALGORITHMS  = RS256
+#   AUTH_ROLES_CLAIM = realm_access.roles
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./resources/keycloak-realm.json:/opt/keycloak/data/import/keycloak-realm.json:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          curl -sf http://localhost:8080/realms/dev/.well-known/openid-configuration \
+            > /dev/null
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s

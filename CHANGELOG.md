@@ -21,7 +21,29 @@ All notable changes to Grapinator
 - Removed integration test runner files from `tests/` — that directory now
   contains only pytest unit tests.
 
-## [2.1.7] - 2026-04-20
+## [2.1.7] - 2026-04-21
+
+### Added
+
+- **OIDC provider configuration guide** (`docs/oidc.md`) — new documentation
+  with a settings reference table and dedicated configuration sections for
+  Keycloak, Azure Entra ID, Auth0, Okta, and local development (HS256 dev
+  secret).  Replaces the previous generic options list with provider-specific
+  `[AUTH]` ini examples including correct JWKS URIs, issuer values, audience,
+  and roles-claim paths for each provider.
+
+- **Keycloak Docker Compose stack** (`docker/keycloak.yaml`) — single-command
+  local Keycloak instance (`docker compose -f docker/keycloak.yaml up -d`)
+  running Keycloak 24 in dev mode.  Imports the `dev` realm on first start,
+  pre-creates a `grapinator` client with a known client secret, `reader` and
+  `admin` realm roles, and two test users with matching credentials.  Includes
+  a healthcheck that waits for the realm OIDC discovery endpoint before
+  reporting healthy.
+
+- **Keycloak realm import file** (`docker/resources/keycloak-realm.json`) —
+  realm definition consumed by the Compose stack; defines the `dev` realm,
+  `grapinator` client, realm roles, and test users so the developer
+  environment is fully reproducible without manual Keycloak configuration.
 
 ### Security
 
