@@ -22,10 +22,33 @@ and imported throughout the package as singletons.
 """
 
 import graphene
+import logging
 import os
 from os import path
 from datetime import datetime
 from crypto_config import cryptoconfigparser
+
+logger = logging.getLogger(__name__)
+
+
+class _RedactedStr(str):
+    """
+    A ``str`` subclass that replaces its value with ``***REDACTED***`` in
+    ``__repr__`` and ``__str__`` output.
+
+    Used to hold database passwords and connection URIs so that accidental
+    logging of the ``Settings`` object (e.g. via ``logger.debug('%s', settings.__dict__)``
+    or ``repr(settings)``) never exposes credentials in log output.
+
+    The underlying string value is preserved for programmatic use (e.g. when
+    passed to SQLAlchemy's ``create_engine``).
+    """
+
+    def __repr__(self):
+        return "'***REDACTED***'"
+
+    def __str__(self):
+        return '***REDACTED***'
 from sqlalchemy.orm import (
     scoped_session
     ,sessionmaker
@@ -107,6 +130,17 @@ class Settings(object):
     # Graphene schema file path
     GQL_SCHEMA = None
 
+    # Authentication / JWT settings (all optional; default to auth off)
+    AUTH_MODE = 'off'              # 'off' | 'mixed' | 'required'
+    AUTH_JWKS_URI = None           # JWKS endpoint URL (production IdP)
+    AUTH_ISSUER = None             # Expected JWT issuer
+    AUTH_AUDIENCE = None           # Expected JWT audience
+    AUTH_ALGORITHMS = 'RS256'      # Allowed signing algorithms (comma-separated)
+    AUTH_ROLES_CLAIM = 'roles'     # Dotted-path to roles list inside the JWT payload
+    AUTH_JWKS_CACHE_TTL = 300      # Seconds to cache the JWK set
+    GRAPHIQL_ACCESS = 'authenticated'  # 'authenticated' | 'open' | 'off'
+    AUTH_DEV_SECRET = None         # HS256 secret for local dev tokens only
+
     # Flask application settings
     FLASK_SERVER_NAME = None
     FLASK_DEBUG = None
@@ -148,6 +182,8 @@ class Settings(object):
         else:
             raise RuntimeError('Could not parse config_file.')
 
+        logger.debug('Settings: resolving config file: %s', config_file)
+
         # CryptoConfigParser reads the encryption key from the environment
         # so credentials are never stored in plain text.
         try:
@@ -160,6 +196,7 @@ class Settings(object):
             cwd = path.abspath(path.dirname(__file__))
             properties = cryptoconfigparser.CryptoConfigParser(crypt_key=key)
             properties_file = cwd + self.config_file
+            logger.debug('Settings: reading properties file: %s', properties_file)
             properties.read(properties_file)
 
             # load WSGI section
@@ -203,15 +240,44 @@ class Settings(object):
             self.DB_CONNECT = properties.get('SQLALCHEMY', 'DB_CONNECT')
             # SQLite URIs omit credentials; all other dialects use the standard
             # user:password@host/dbname form.
+            # Both DB_PASSWORD and SQLALCHEMY_DATABASE_URI are wrapped in
+            # _RedactedStr so accidental logging of the Settings object never
+            # exposes credentials in plaintext log output.
             if 'sqlite' in self.DB_TYPE:
-                self.SQLALCHEMY_DATABASE_URI = f"{self.DB_TYPE}://{self.DB_CONNECT}"
+                self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
+                    f"{self.DB_TYPE}://{self.DB_CONNECT}"
+                )
             else:
-                self.SQLALCHEMY_DATABASE_URI = f"{self.DB_TYPE}://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_CONNECT}"
+                self.DB_PASSWORD = _RedactedStr(self.DB_PASSWORD)
+                self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
+                    f"{self.DB_TYPE}://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_CONNECT}"
+                )
 
             self.SQLALCHEMY_TRACK_MODIFICATIONS = properties.getboolean('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS')
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
+
+            # load AUTH section (entirely optional — defaults are set above)
+            if properties.has_section('AUTH'):
+                if properties.has_option('AUTH', 'AUTH_MODE'):
+                    self.AUTH_MODE = properties.get('AUTH', 'AUTH_MODE').lower()
+                if properties.has_option('AUTH', 'AUTH_JWKS_URI'):
+                    self.AUTH_JWKS_URI = properties.get('AUTH', 'AUTH_JWKS_URI')
+                if properties.has_option('AUTH', 'AUTH_ISSUER'):
+                    self.AUTH_ISSUER = properties.get('AUTH', 'AUTH_ISSUER')
+                if properties.has_option('AUTH', 'AUTH_AUDIENCE'):
+                    self.AUTH_AUDIENCE = properties.get('AUTH', 'AUTH_AUDIENCE')
+                if properties.has_option('AUTH', 'AUTH_ALGORITHMS'):
+                    self.AUTH_ALGORITHMS = properties.get('AUTH', 'AUTH_ALGORITHMS')
+                if properties.has_option('AUTH', 'AUTH_ROLES_CLAIM'):
+                    self.AUTH_ROLES_CLAIM = properties.get('AUTH', 'AUTH_ROLES_CLAIM')
+                if properties.has_option('AUTH', 'AUTH_JWKS_CACHE_TTL'):
+                    self.AUTH_JWKS_CACHE_TTL = properties.getint('AUTH', 'AUTH_JWKS_CACHE_TTL')
+                if properties.has_option('AUTH', 'GRAPHIQL_ACCESS'):
+                    self.GRAPHIQL_ACCESS = properties.get('AUTH', 'GRAPHIQL_ACCESS').lower()
+                if properties.has_option('AUTH', 'AUTH_DEV_SECRET'):
+                    self.AUTH_DEV_SECRET = properties.get('AUTH', 'AUTH_DEV_SECRET')
 
             # Oracle-specific locale settings consumed by cx_Oracle.
             # Only set when the options are present in the config file.
@@ -219,7 +285,40 @@ class Settings(object):
                 os.environ['NLS_LANG'] = properties.get('SQLALCHEMY', 'ORCL_NLS_LANG')
             if properties.has_option('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT'):
                 os.environ['NLS_DATE_FORMAT'] = properties.get('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT')
-            
+
+            if self.AUTH_DEV_SECRET:
+                _DEFAULT_DEV_SECRET = 'change-me-local-dev-only'
+                if (self.AUTH_DEV_SECRET == _DEFAULT_DEV_SECRET
+                        and self.AUTH_MODE != 'off'
+                        and not self.AUTH_JWKS_URI):
+                    raise RuntimeError(
+                        'AUTH_DEV_SECRET must be changed from the default value '
+                        'before enabling auth (AUTH_MODE is not "off" and no '
+                        'AUTH_JWKS_URI is configured).'
+                    )
+                logger.warning(
+                    'AUTH_DEV_SECRET is set — HS256 local-dev mode active. '
+                    'Never use AUTH_DEV_SECRET in production.'
+                )
+            if self.FLASK_DEBUG and self.AUTH_MODE != 'off':
+                logger.warning(
+                    'FLASK_DEBUG=True with auth enabled (AUTH_MODE=%s) — '
+                    'Flask\'s interactive debugger exposes a Python REPL over '
+                    'HTTP and bypasses all authentication. Never deploy this '
+                    'configuration.',
+                    self.AUTH_MODE,
+                )
+            logger.debug(
+                'Settings: WSGI=%s:%s TLS=%s CORS_ENABLE=%s',
+                self.WSGI_SOCKET_HOST, self.WSGI_SOCKET_PORT,
+                'on' if self.WSGI_SSL_CERT else 'off',
+                self.CORS_ENABLE,
+            )
+            logger.debug(
+                'Settings: DB_TYPE=%s AUTH_MODE=%s GRAPHIQL_ACCESS=%s',
+                self.DB_TYPE, self.AUTH_MODE, self.GRAPHIQL_ACCESS,
+            )
+
         except cryptoconfigparser.ParsingError as err:
             raise RuntimeError(f"Could not parse: {err}")
 
@@ -376,12 +475,14 @@ class SchemaSettings(object):
                 # check if field gql_description is present and non-empty; if so, use it, otherwise set to None
                 ,'desc':r['gql_description'] if 'gql_description' in r and r['gql_description'] else None
                 # check if field gql_deprecation_reason is present and non-empty; if so, use it, otherwise set to None
-                ,'deprecation_reason': r['gql_deprecation_reason'] if 'gql_deprecation_reason' in r and r['gql_deprecation_reason'] else None   
+                ,'deprecation_reason': r['gql_deprecation_reason'] if 'gql_deprecation_reason' in r and r['gql_deprecation_reason'] else None
                 ,'type_args': r['gql_of_type'] if 'gql_of_type' in r else None
                 ,'isqueryable': r['gql_isqueryable'] if 'gql_isqueryable' in r else True
                 ,'ishidden': r['gql_ishidden'] if 'gql_ishidden' in r else False
                 ,'isresolver': r['gql_isresolver'] if 'gql_isresolver' in r else False
                 ,'resolver_func':r['gql_resolver_func'] if 'gql_resolver_func' in r else None
+                # gql_auth_roles: list of role strings required to read this field; None/absent = public
+                ,'auth_roles': r['gql_auth_roles'] if 'gql_auth_roles' in r and r['gql_auth_roles'] else None
                 } for r in row['FIELDS']]
             gql_class = {
                 'gql_class': row['GQL_CLASS_NAME']
@@ -389,6 +490,8 @@ class SchemaSettings(object):
                 ,'gql_db_class': row['DB_CLASS_NAME']
                 ,'gql_columns': gql_class_cols
                 ,'gql_db_default_sort_col': row['DB_DEFAULT_SORT_COL']
+                # AUTH_ROLES: entity-level role list; absent/None means public (no restriction)
+                ,'gql_entity_auth_roles': row['AUTH_ROLES'] if 'AUTH_ROLES' in row and row['AUTH_ROLES'] else None
                 }
             gql_classes.append(gql_class)
         return gql_classes

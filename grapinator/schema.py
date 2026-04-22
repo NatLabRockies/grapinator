@@ -17,13 +17,21 @@ Filtering, sorting, and result paging are handled centrally in
 same query capabilities without any per-entity boilerplate.
 """
 
-from sqlalchemy import and_, or_, desc, asc
+from sqlalchemy import and_, or_, desc, asc, false as sql_false
 import graphene
 from graphene import relay
 from graphene_sqlalchemy import SQLAlchemyObjectType, SQLAlchemyConnectionField
 import datetime
-from grapinator import log, schema_settings
+import logging
+from grapinator import schema_settings
 from grapinator.model import *
+
+logger = logging.getLogger(__name__)
+
+# Module-level registry: maps SQLAlchemy class name (e.g. 'db_Employees') to
+# the list of roles required to query that entity.  Populated at schema-build
+# time; used by MyConnectionField.get_query() for entity-level RBAC.
+_ENTITY_AUTH_ROLES = {}
 
 def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_col):
     """
@@ -66,6 +74,28 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
             if attr.get('deprecation_reason'):
                 field_kwargs['deprecation_reason'] = attr['deprecation_reason']
             include_fields[attr['name']] = attr['type'](attr['type_args'], **field_kwargs)
+
+            # If this field declares required roles, wrap its resolver so that
+            # callers lacking the necessary roles receive null instead of the
+            # real value.  Auth-restricted fields are still fully introspectable
+            # — they appear in the schema but resolve to null for callers whose
+            # role set does not intersect the declared roles.
+            if attr.get('auth_roles'):
+                required_roles = attr['auth_roles']
+                field_name = attr['name']
+
+                def _make_auth_resolver(fname, roles):
+                    def _auth_resolver(root, info):
+                        ctx = info.context if info.context is not None else {}
+                        user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
+                        if not set(user_roles) & set(roles):
+                            return None
+                        return getattr(root, fname, None)
+                    return _auth_resolver
+
+                include_fields['resolve_{}'.format(field_name)] = _make_auth_resolver(
+                    field_name, required_roles
+                )
 
     gql_attrs = {
         # Meta inner class binds this Graphene type to its SQLAlchemy model
@@ -162,15 +192,45 @@ class MyConnectionField(SQLAlchemyConnectionField):
         sort_dir = args.pop('sort_dir', None)
 
         # Build ORDER BY only when a sort column is actually provided/non-None.
+        # Validate sort_by_name against actual model attributes to prevent
+        # client-controlled getattr on arbitrary/private model members.
         sort_clause = None
         if sort_by_name:
-            sort_col = getattr(model, sort_by_name)
-            sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
+            if (
+                sort_by_name.startswith('_')
+                or not hasattr(model, sort_by_name)
+                or not hasattr(getattr(model, sort_by_name), 'property')
+            ):
+                logger.warning(
+                    'get_query: invalid sort_by column %r on %s — ignored',
+                    sort_by_name, model.__name__,
+                )
+            else:
+                sort_col = getattr(model, sort_by_name)
+                sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
 
         # Let graphene-sqlalchemy 3.x handle its own sort/filter params.
         query = super(MyConnectionField, cls).get_query(
             model, info, sort=sort, filter=filter, **args
         )
+
+        # Entity-level RBAC: if this entity declares AUTH_ROLES and the
+        # caller's roles do not intersect, return an empty result set rather
+        # than a permission error — this leaks no information about the data.
+        entity_auth_roles = _ENTITY_AUTH_ROLES.get(model.__name__)
+        if entity_auth_roles:
+            ctx = info.context if info.context is not None else {}
+            user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
+            if not set(user_roles) & set(entity_auth_roles):
+                logger.debug(
+                    'RBAC entity access denied: %s user_roles=%s required=%s',
+                    model.__name__, user_roles, entity_auth_roles,
+                )
+                return query.filter(sql_false())
+            logger.debug(
+                'RBAC entity access granted: %s user_roles=%s',
+                model.__name__, user_roles,
+            )
 
         filter_conditions = []
         for field, value in args.items():
@@ -181,6 +241,14 @@ class MyConnectionField(SQLAlchemyConnectionField):
             if matches in ('exact', 'eq'):
                 filter_conditions.append(getattr(model, field) == value)
             elif matches in ('regex', 're'):
+                # Cap regex length to prevent ReDoS via catastrophic backtracking
+                # in the database engine from client-supplied patterns.
+                if len(str(value)) > 200:
+                    logger.warning(
+                        'get_query: regex pattern too long (%d chars) — rejected',
+                        len(str(value)),
+                    )
+                    raise ValueError('Regex pattern exceeds maximum allowed length (200 chars).')
                 filter_conditions.append(getattr(model, field).regexp_match(value))
             elif matches in ('startswith', 'sw'):
                 filter_conditions.append(getattr(model, field).ilike(str(value) + '%'))
@@ -219,6 +287,7 @@ class MyConnectionField(SQLAlchemyConnectionField):
 # the schema dictionary and inject each one into the module namespace.  This
 # allows schema.py to grow with the schema file alone — no manual class
 # definitions are needed here.
+_gql_class_count = 0
 for clazz in schema_settings.get_gql_classes():
     globals()[clazz['gql_class']] = gql_class_constructor(
         clazz['gql_class']
@@ -226,6 +295,17 @@ for clazz in schema_settings.get_gql_classes():
         ,clazz['gql_columns']
         ,clazz['gql_db_default_sort_col']
         )
+    logger.debug('GQL type built: %s (db=%s)', clazz['gql_class'], clazz['gql_db_class'])
+    # Register entity-level auth roles so MyConnectionField.get_query() can
+    # enforce them using the SQLAlchemy model class name as the key.
+    if clazz.get('gql_entity_auth_roles'):
+        _ENTITY_AUTH_ROLES[clazz['gql_db_class']] = clazz['gql_entity_auth_roles']
+        logger.debug(
+            'Entity auth roles registered: %s -> %s',
+            clazz['gql_db_class'], clazz['gql_entity_auth_roles'],
+        )
+    _gql_class_count += 1
+logger.info('GraphQL types built: %d', _gql_class_count)
 
 def _make_gql_query_fields(cols):
     """
@@ -295,3 +375,4 @@ class Query(graphene.ObjectType):
 # auto_camelcase=False preserves the snake_case field names defined in the
 # schema dictionary, keeping GraphQL field names consistent with the database.
 gql_schema = graphene.Schema(query=Query, auto_camelcase=False)
+logger.info('GraphQL schema compiled (auto_camelcase=False)')

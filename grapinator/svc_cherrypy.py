@@ -34,10 +34,13 @@ import cherrypy
 from requestlogger import WSGILogger, ApacheFormatter
 from logging import StreamHandler
 from flask import Flask
+import logging
 
-from grapinator import settings, log
+from grapinator import settings
 from grapinator.app import app
 from grapinator.model import db_session
+
+logger = logging.getLogger(__name__)
 
 
 class SecurityHeadersMiddleware:
@@ -198,13 +201,33 @@ def run_server():
         (i.e. the ``[WSGI]`` section omits the SSL options) CherryPy runs
         in plain HTTP mode.
     """
-    # Build the middleware stack: CorsMiddleware → SecurityHeadersMiddleware
-    # → WSGILogger (outermost, so every request is logged regardless of CORS
-    # or security-header processing).
+    # Build the middleware stack.  When AUTH_MODE is not 'off', insert
+    # BearerAuthMiddleware between CORS and the Flask app so that:
+    #
+    #   CherryPy (transport)
+    #     └── WSGILogger              (access logging, outermost)
+    #         └── SecurityHeadersMiddleware
+    #             └── CorsMiddleware
+    #                 └── BearerAuthMiddleware  (only when auth is enabled)
+    #                     └── Flask app
+    #
+    # Placing BearerAuthMiddleware inside CorsMiddleware means OPTIONS
+    # preflight requests are already handled by CorsMiddleware and never
+    # reach the auth layer, so CORS negotiation always works regardless of
+    # auth mode.  BearerAuthMiddleware also short-circuits OPTIONS itself as
+    # a belt-and-suspenders safety measure.
+    from grapinator.auth import BearerAuthMiddleware
     handlers = [StreamHandler()]
-    app_with_cors = CorsMiddleware(app)
+    inner_app = app
+    if settings.AUTH_MODE != 'off':
+        inner_app = BearerAuthMiddleware(inner_app, settings)
+        logger.debug('Middleware: BearerAuthMiddleware inserted (mode=%s)', settings.AUTH_MODE)
+    app_with_cors = CorsMiddleware(inner_app)
+    logger.debug('Middleware: CorsMiddleware (enabled=%s)', settings.CORS_ENABLE)
     app_with_headers = SecurityHeadersMiddleware(app_with_cors)
+    logger.debug('Middleware: SecurityHeadersMiddleware')
     app_logged = WSGILogger(app_with_headers, handlers, ApacheFormatter())
+    logger.debug('Middleware: WSGILogger (outermost)')
 
     # Graft the decorated WSGI app into CherryPy's tree at the root path.
     cherrypy.tree.graft(app_logged, '/')
@@ -217,6 +240,12 @@ def run_server():
         'server.ssl_certificate': settings.WSGI_SSL_CERT,
         'server.ssl_private_key': settings.WSGI_SSL_PRIVKEY,
     })
+    logger.info(
+        'Starting CherryPy on %s:%s (TLS=%s auth_mode=%s)',
+        settings.WSGI_SOCKET_HOST, settings.WSGI_SOCKET_PORT,
+        'on' if settings.WSGI_SSL_CERT else 'off',
+        settings.AUTH_MODE,
+    )
     # Start the CherryPy WSGI engine and block until shutdown.
     cherrypy.engine.start()
     cherrypy.engine.block()

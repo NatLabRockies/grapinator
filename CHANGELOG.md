@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the GraphQL Integration Testing Suite.
+All notable changes to Grapinator
 
 ## [Unreleased]
 
@@ -20,6 +20,300 @@ All notable changes to the GraphQL Integration Testing Suite.
   GraphQL endpoint.
 - Removed integration test runner files from `tests/` — that directory now
   contains only pytest unit tests.
+
+## [2.1.7] - 2026-04-21
+
+### Added
+
+- **OIDC provider configuration guide** (`docs/oidc.md`) — documentation
+  with a settings reference table and dedicated configuration sections for
+  Keycloak, Azure Entra ID, Auth0, Okta, and local development (HS256 dev
+  secret).  Includes provider-specific `[AUTH]` ini examples with correct
+  JWKS URIs, issuer values, audience, and roles-claim paths for each provider.
+
+- **Keycloak RBAC testing examples** (`docs/oidc.md`) — new "Testing RBAC
+  with the local Keycloak Docker container" section with working `curl`
+  examples for password grant (test user credentials), unauthenticated
+  (mixed mode), and client credentials (service account) flows against the
+  Northwind `birth_date` hr-restricted field.  Includes a realm readiness
+  check, raw response diagnostic step, and token inspection one-liner.
+
+- **Keycloak Docker Compose stack** (`docker/keycloak.yaml`) — single-command
+  local Keycloak instance (`docker compose -f docker/keycloak.yaml up -d`)
+  running Keycloak 26.1 in dev mode.  Imports the `grapinator-dev` realm on
+  first start via `docker/resources/keycloak-realm.json`.  Includes a
+  healthcheck that waits for the realm OIDC discovery endpoint before
+  reporting healthy.
+
+- **Keycloak realm import file** (`docker/resources/keycloak-realm.json`) —
+  realm definition consumed by the Compose stack; defines the `grapinator-dev`
+  realm, `grapinator-api` client (secret `grapinator-api-secret`), `hr` and
+  `admin` realm roles, and two test users (`hruser`/`hruser` with `hr` role,
+  `admin`/`admin` with `hr` and `admin` roles).
+
+- **Keycloak local dev ini file** (`grapinator/resources/grapinator_rbac_keycloakdev.ini`)
+  — ready-to-use ini file for RBAC testing against the local Keycloak Docker
+  container.  Configures `AUTH_MODE = mixed`, JWKS URI, issuer, and audience
+  pointing at `localhost:8080/realms/grapinator-dev`, with `GRAPHIQL_ACCESS = open`
+  for convenient browser-based testing.
+
+### Fixed
+
+- **Keycloak realm import: users blocked by required actions** —
+  `docker/resources/keycloak-realm.json` now includes an explicit
+  `requiredActions` array at the realm level with all default actions set to
+  `"defaultAction": false`.  Without this, Keycloak applied `VERIFY_EMAIL`
+  to imported users, causing `invalid_grant / Account is not fully set up`
+  on every password-grant token request.  User objects also carry
+  `"requiredActions": []` to prevent any per-user actions being attached on
+  import.
+
+- **Keycloak access tokens missing `aud` claim** — added an `oidc-audience-mapper`
+  protocol mapper to the `grapinator-api` client in `keycloak-realm.json`.
+  Keycloak does not include the client ID in `aud` by default; without the
+  mapper every token was rejected by Grapinator with
+  `MissingRequiredClaimError: Token is missing the "aud" claim`.
+
+- **Keycloak Compose stack and realm file aligned to canonical names** —
+  updated realm (`dev` → `grapinator-dev`), client ID (`grapinator` →
+  `grapinator-api`), client secret, roles (`reader` → `hr`), and test user
+  (`reader` → `hruser`) to match the values documented in `docs/oidc.md` and
+  used by `grapinator_rbac_keycloakdev.ini`.
+
+### Security
+
+- **[LOW] Warn on `FLASK_DEBUG=True` with auth enabled** (`grapinator/settings.py`)
+  — `Settings` now logs a `WARNING` at startup when `FLASK_DEBUG = True` is
+  combined with `AUTH_MODE != 'off'`.  Flask's interactive debugger exposes
+  a Python REPL over HTTP and effectively bypasses all authentication; this
+  combination must never be used in production.  The warning includes the
+  active `AUTH_MODE` value to make the misconfiguration explicit in the log.
+  *(OWASP A05 — Security Misconfiguration)*
+
+## [2.1.6] - 2026-04-20
+
+### Security
+
+- **[LOW] Startup guard for default `AUTH_DEV_SECRET`** (`grapinator/settings.py`)
+  — `Settings` now raises `RuntimeError` at startup if `AUTH_DEV_SECRET` equals
+  the known default value (`change-me-local-dev-only`) while auth is active
+  (`AUTH_MODE != 'off'` and no `AUTH_JWKS_URI` is configured).  Prevents
+  accidental deployment with the committed dev secret, which would make all
+  HS256 tokens trivially forgeable by anyone who has cloned the repository.
+  When `AUTH_MODE = 'off'` the default value is silently permitted (auth is
+  not active, so the secret is irrelevant).
+  *(OWASP A05 — Security Misconfiguration)*
+
+## [2.1.5] - 2026-04-20
+
+### Security
+
+- **[MEDIUM] Redact DB credentials in `Settings` to prevent log exposure**
+  (`grapinator/settings.py`) — `DB_PASSWORD` and `SQLALCHEMY_DATABASE_URI`
+  are now stored as `_RedactedStr` instances, a `str` subclass whose
+  `__repr__` and `__str__` return `***REDACTED***`.  The underlying value is
+  still used correctly by `create_engine` and SQLAlchemy, but any accidental
+  logging of the settings object or individual attributes will not expose
+  plaintext credentials.  *(OWASP A02 — Cryptographic Failures)*
+
+## [2.1.4] - 2026-04-20
+
+### Security
+
+- **[HIGH] Block JWT `none` algorithm** (`grapinator/auth.py`) — `none` is now
+  stripped from `AUTH_ALGORITHMS` regardless of ini file contents.  If the
+  resulting list is empty a `ValueError` is raised at startup rather than
+  silently accepting unsigned tokens.  Prevents JWT algorithm confusion
+  attacks that would allow complete authentication bypass.
+  *(OWASP A07 — Identification & Authentication Failures)*
+
+- **[HIGH] Validate `sort_by` against real model columns** (`grapinator/schema.py`)
+  — Client-supplied `sort_by` values are now checked with `hasattr` and
+  verified to be a proper `SQLAlchemy` column attribute (must have `.property`)
+  before being passed to `getattr`.  Names starting with `_` are unconditionally
+  rejected.  Invalid values are logged at WARNING and silently ignored rather
+  than raising an unhandled `AttributeError` that exposed internal model
+  structure.  *(OWASP A03 — Injection)*
+
+- **[MEDIUM] Cap `regex` pattern length to 200 characters** (`grapinator/schema.py`)
+  — Client-supplied regex patterns (via `matches=regex` or `matches=re`) are
+  now rejected with a `ValueError` if they exceed 200 characters.  Prevents
+  ReDoS attacks via catastrophic backtracking patterns sent to the database
+  engine.  *(OWASP A03 — Injection / DoS)*
+
+### Tests
+
+- **`tests/test_security.py`** — 16 new regression tests covering all three
+  fixes:
+  - `TestJwtNoneAlgorithmBlocked` — 7 tests: case-insensitive stripping, mixed
+    lists, empty-after-strip `ValueError`, raw `alg=none` header token rejected
+    as 401, valid HS256 unaffected
+  - `TestSortByValidation` — 4 tests: valid column accepted, non-existent
+    column ignored, `_private` and `__dunder__` names rejected
+  - `TestRegexLengthCap` — 5 tests: short/exact-200 accepted, 201+ rejected,
+    classic ReDoS pattern rejected, `re` alias also capped
+
+## [2.1.3] - 2026-04-20
+
+### Added
+
+- **Structured logging across all modules** — every module now uses a named
+  child logger under the `grapinator` hierarchy so output is routed through
+  the existing `logging.conf` configuration with no changes to that file.
+
+  | Module | Logger name | Key events |
+  |--------|-------------|------------|
+  | `__init__.py` | `grapinator` | `INFO` config/schema loaded; `CRITICAL` on fatal startup error |
+  | `settings.py` | `grapinator.settings` | `DEBUG` file resolution; `WARNING` when `AUTH_DEV_SECRET` is set |
+  | `model.py` | `grapinator.model` | `INFO` engine created + ORM count; `DEBUG` per-class registration |
+  | `schema.py` | `grapinator.schema` | `INFO` type count + schema compiled; `DEBUG` per-type build + RBAC decisions |
+  | `app.py` | `grapinator.app` | `INFO` endpoint registered; `DEBUG` per-request auth state |
+  | `svc_cherrypy.py` | `grapinator.svc_cherrypy` | `INFO` server bind; `DEBUG` middleware stack layers |
+  | `auth.py` | `grapinator.auth` | `INFO` middleware init; `WARNING` dev-secret or failed token; `DEBUG` all pass-through paths |
+
+- **`logging.config.fileConfig` fix** — `disable_existing_loggers=False` passed
+  so child loggers created during imports are not silenced by `fileConfig`.
+
+- **`tests/test_logging.py`** — 33 new tests (2 conditionally skipped when the
+  default schema has no entity auth roles) verifying:
+  - Correct logger names for all modules
+  - Log levels: `DEBUG` for routine decisions, `INFO` for startup milestones,
+    `WARNING` for security-relevant events (dev secret, invalid/missing tokens)
+  - All `BearerAuthMiddleware.__call__` code paths emit the right level
+  - `app.py` per-request auth state is logged at `DEBUG`
+
+## [2.1.2] - 2026-04-20
+
+### Added
+
+- **`GRAPINATOR_CONFIG` environment variable** — override the ini file loaded at
+  startup without changing code.  Defaults to `/resources/grapinator.ini`.
+  Follows the same pattern as the existing `GQLAPI_CRYPT_KEY` env var.
+- **`docs/grapinator_ini.md`** — new "Selecting the ini file at runtime" section
+  documenting `GRAPINATOR_CONFIG` with usage examples.
+
+## [2.1.1] - 2026-04-20
+
+### Bug Fixes
+
+#### RBAC / JWT auth not working — three root causes (Issue #17)
+
+- **`tests/test_rbac.sh` — wrong shebang** (`!#/bin/sh` → `#!/bin/sh`):
+  The reversed characters prevented the OS from recognising the interpreter
+  directive, so the script could not be executed directly.
+
+- **`tests/test_rbac.sh` — no signing secret passed to `dev_jwt.py`** *(primary cause)*:
+  `dev_jwt.py` requires `--secret` or `GRAPINATOR_DEV_SECRET`.  Neither was
+  provided, so the tool exited with an error, `TOKEN` was empty, and curl sent
+  `Authorization: Bearer ` (no token).  `BearerAuthMiddleware` attempted to
+  decode the empty string, failed immediately, and returned 401 — so no
+  GraphQL execution occurred and `birth_date` appeared as `null` in the error
+  response rather than from a resolver.  Fixed by adding
+  `--secret change-me-local-dev-only` to match the `AUTH_DEV_SECRET` configured
+  in `grapinator.ini`.
+
+- **Both ini files — `Authorization` missing from `CORS_ALLOW_HEADERS`**:
+  Browser preflight (`OPTIONS`) did not advertise `Authorization` as an allowed
+  header, causing browsers to refuse to send the JWT when using the GraphiQL
+  IDE.  Added `Authorization` to `CORS_ALLOW_HEADERS` in both
+  `grapinator.ini` and `grapinator_rbac.ini`.
+
+#### Flask dev server bypasses auth middleware
+
+`BearerAuthMiddleware` is only inserted into the WSGI stack by `svc_cherrypy.py`.
+Flask's built-in dev server (`app.py` / `flask run`) does not invoke the
+middleware, so JWT tokens are silently ignored and role-restricted fields return
+their real values to all callers.  Documentation and `test_rbac.sh` now
+prominently note that RBAC testing requires running `svc_cherrypy.py`.
+
+### New Files
+- **`grapinator/resources/schema_rbac.dct`** — Example schema with `gql_auth_roles`
+  on `birth_date` (restricted to `['admin', 'hr']`) for RBAC testing
+- **`grapinator/resources/grapinator_rbac.ini`** — Matching ini with
+  `AUTH_MODE = mixed` and `AUTH_DEV_SECRET` for local RBAC dev/testing
+- **`tests/test_rbac.sh`** — Shell script that generates an `hr` JWT and queries
+  the `birth_date` field to verify field-level RBAC end-to-end
+
+### Tests
+- **Fixed `TestSettingsAuthSection`** — tests now check `Settings` class-level
+  attribute defaults rather than the loaded singleton, so they remain valid
+  regardless of what `grapinator.ini` currently has configured
+
+### Documentation
+- **`docs/grapinator_ini.md`** — Added CherryPy requirement callout to the
+  "Local development" section; replaced the generic curl example with the
+  contents of `tests/test_rbac.sh`
+- **`docs/schema_docs.md`** — Added CherryPy requirement callout at the top of
+  the RBAC section
+
+## [2.1.0] - 2026-04-20
+
+### New Features
+
+#### JWT Bearer Token Authentication & RBAC (Issue #17)
+
+**IdP-agnostic JWT middleware** — validates bearer tokens against any OIDC-compatible
+identity provider (Azure Entra ID, Keycloak, Auth0, …) using standard JWKS / RFC 7519
+parameters.  No provider-specific logic lives in the codebase — all IdP specifics are
+externalized to `grapinator.ini`.
+
+- **Three auth modes** controlled by `AUTH_MODE` in a new `[AUTH]` ini section:
+  - `off` *(default)* — zero behaviour change; existing deployments completely unaffected
+  - `mixed` — unauthenticated requests reach public data; role-restricted fields/entities
+    gate on the caller's JWT roles; an invalid token always returns 401
+  - `required` — every request must carry a valid bearer token (except CORS preflight
+    and, optionally, the GraphiQL IDE page)
+- **Entity-level access control** via `AUTH_ROLES: ['role1', ...]` on any schema.dct
+  entity — callers without a matching role receive an empty result set (not a 401)
+- **Field-level access control** via `gql_auth_roles: ['role1', ...]` on any field —
+  callers without a matching role receive `null`; the field remains introspectable
+- **Dotted-path roles claim** — `AUTH_ROLES_CLAIM` supports nested JWT claims such as
+  `realm_access.roles` (Keycloak) in addition to flat claims like `roles` (Entra ID)
+- **GraphiQL access control** via `GRAPHIQL_ACCESS`: `authenticated` (default), `open`
+  (IDE served without auth), or `off` (IDE disabled entirely)
+- **Local dev JWT generator** — `tools/dev_jwt.py` generates HS256 tokens signed with
+  `AUTH_DEV_SECRET` for testing without a live IdP; supports `--roles`, `--claim`,
+  `--expiry`, `--print-header`
+
+### New Files
+- **`grapinator/auth.py`** — `BearerAuthMiddleware` WSGI middleware
+- **`tools/dev_jwt.py`** — Local development JWT generator
+
+### Modified Files
+- **`grapinator/settings.py`** — `AUTH_*` attributes with safe defaults; optional
+  `[AUTH]` INI section loading; `_make_gql_classes()` propagates `gql_auth_roles`
+  and `AUTH_ROLES` from schema.dct
+- **`grapinator/schema.py`** — Field-level auth resolver wrapper in
+  `gql_class_constructor`; entity-level `query.filter(sql_false())` gate in
+  `MyConnectionField.get_query`; `_ENTITY_AUTH_ROLES` module-level registry
+- **`grapinator/app.py`** — `@before_request` threads WSGI auth state into Flask `g`;
+  `context_value=_get_graphql_context` exposes `user_roles` to resolvers
+- **`grapinator/svc_cherrypy.py`** — `BearerAuthMiddleware` inserted inside
+  `CorsMiddleware` when `AUTH_MODE != 'off'`
+- **`grapinator/resources/grapinator.ini`** — Added `[AUTH]` section (`AUTH_MODE = off`
+  default; all production settings commented out with IdP examples)
+- **`setup.cfg`** — Added `PyJWT[crypto]>=2.8.0` to `install_requires`
+
+### Tests
+- **Added `tests/test_bearer_auth.py`** — 70 new tests:
+  - Middleware: all three modes, all token scenarios (valid, expired, wrong secret,
+    malformed), CORS preflight bypass, GraphiQL access control (`open`/`authenticated`)
+  - RSA/JWKS code path via self-generated key pair (no network calls)
+  - Field-level RBAC: matching role returns value; missing role returns `null`;
+    multi-role OR logic; public fields have no injected resolver
+  - Entity-level RBAC: matching role runs query normally; missing role applies
+    `filter(false())`; no `AUTH_ROLES` key means public
+  - Dev JWT tool: token generation, nested claim paths, expiry enforcement,
+    end-to-end validation through middleware
+  - Settings defaults: all `AUTH_*` attributes verified
+
+### Documentation
+- **`docs/grapinator_ini.md`** — Full `[AUTH]` section reference: all settings,
+  provider-specific examples (Azure Entra ID, Keycloak, Auth0), CORS note,
+  local dev workflow with `dev_jwt.py` usage examples
+- **`docs/schema_docs.md`** — Added `AUTH_ROLES` and `gql_auth_roles` to dictionary
+  element reference; new **RBAC** section with entity-level/field-level/combined
+  examples, role naming guide per provider, and a behaviour matrix table
 
 ## [2.0.4] - 2026-04-16
 
