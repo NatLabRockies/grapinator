@@ -4,6 +4,22 @@ All notable changes to Grapinator
 
 ## [Unreleased]
 
+## [2.1.8] - 2026-04-29
+
+### Fixed
+
+- **`_RedactedStr` embeds `***REDACTED***` into `SQLALCHEMY_DATABASE_URI`, causing ORA-01017** (`grapinator/settings.py`, issue #25)
+  — When credential redaction was introduced in v2.1.5, `DB_PASSWORD` was
+  wrapped in `_RedactedStr` *before* the `SQLALCHEMY_DATABASE_URI` f-string
+  was built.  Because `_RedactedStr` overrides `__str__` to return
+  `'***REDACTED***'`, and Python f-strings invoke `__str__` on embedded
+  objects, the URI contained the literal string `***REDACTED***` as the
+  password.  Oracle (and any other non-SQLite database) rejected every
+  connection with `ORA-01017: invalid username/password; logon denied`.
+  Fixed by building the URI with the plaintext password first, then wrapping
+  `DB_PASSWORD` in `_RedactedStr`.  The URI itself remains wrapped in
+  `_RedactedStr` so credentials are still redacted in log output.
+
 ### Added
 
 #### GraphQL Integration Test Runner sub-project (Issue #22)

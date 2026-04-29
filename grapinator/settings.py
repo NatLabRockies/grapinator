@@ -243,15 +243,20 @@ class Settings(object):
             # Both DB_PASSWORD and SQLALCHEMY_DATABASE_URI are wrapped in
             # _RedactedStr so accidental logging of the Settings object never
             # exposes credentials in plaintext log output.
+            # IMPORTANT: build the URI with the plaintext password BEFORE
+            # wrapping DB_PASSWORD in _RedactedStr.  _RedactedStr overrides
+            # __str__ to return '***REDACTED***', so using it inside an
+            # f-string would embed the literal string '***REDACTED***' in the
+            # URI instead of the real password, causing ORA-01017 / auth errors.
             if 'sqlite' in self.DB_TYPE:
                 self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
                     f"{self.DB_TYPE}://{self.DB_CONNECT}"
                 )
             else:
-                self.DB_PASSWORD = _RedactedStr(self.DB_PASSWORD)
                 self.SQLALCHEMY_DATABASE_URI = _RedactedStr(
                     f"{self.DB_TYPE}://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_CONNECT}"
                 )
+                self.DB_PASSWORD = _RedactedStr(self.DB_PASSWORD)
 
             self.SQLALCHEMY_TRACK_MODIFICATIONS = properties.getboolean('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS')
 
