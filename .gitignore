@@ -4,6 +4,7 @@ docker/resources/instantclient*
 docker/resources/oracle*
 mariadb/*
 venv/*
+grapinator/resources.test/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -87,7 +88,7 @@ celerybeat-schedule
 *.sage.py
 
 # dotenv
-#.env
+.env
 
 # virtualenv
 .venv
