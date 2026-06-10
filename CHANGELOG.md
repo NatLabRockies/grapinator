@@ -4,6 +4,23 @@ All notable changes to Grapinator
 
 ## [Unreleased]
 
+## [2.1.9] - 2026-06-10
+
+### Added
+
+- **Configurable CherryPy worker thread pool** (`grapinator/settings.py`, `grapinator/svc_cherrypy.py`, issue #27)
+  — The CherryPy WSGI server previously used its built-in default of 10 worker
+  threads.  At concurrency levels above 10 (e.g. 12–30 simultaneous requests),
+  excess clients queued in the kernel socket accept backlog and timed out before
+  a worker became free.  A new `WSGI_THREAD_POOL` setting (default `30`) is now
+  loaded from the `[WSGI]` section of the ini file and passed to CherryPy as
+  `server.thread_pool`.  Existing ini files that omit the key continue to work
+  and automatically receive the default of 30 (via a `has_option`-guarded
+  loader), so no ini changes are required for existing deployments.
+  All three bundled ini templates (`grapinator.ini`, `grapinator_rbac.ini`,
+  `grapinator_rbac_keycloakdev.ini`) now include the setting with an explanatory
+  comment block so operators can see and adjust the knob.
+
 ## [2.1.8] - 2026-04-29
 
 ### Fixed

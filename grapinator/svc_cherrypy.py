@@ -234,6 +234,7 @@ def run_server():
     cherrypy.config.update({
         'server.socket_host': settings.WSGI_SOCKET_HOST,
         'server.socket_port': settings.WSGI_SOCKET_PORT,
+        'server.thread_pool': settings.WSGI_THREAD_POOL,
         'engine.autoreload.on': False,   # Not appropriate for production
         'log.screen': True,
         'server.ssl_module': 'builtin',
