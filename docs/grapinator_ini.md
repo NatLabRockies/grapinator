@@ -119,12 +119,13 @@ GQL_SCHEMA = /resources/schema.dct
 
 Network and TLS settings for the CherryPy WSGI server.
 
-| Setting | Required | Type | Description |
-|---------|----------|------|-------------|
-| `WSGI_SOCKET_HOST` | Yes | string | Hostname or IP address the server binds to.  Use `127.0.0.1` to restrict to localhost or `0.0.0.0` to listen on all interfaces. |
-| `WSGI_SOCKET_PORT` | Yes | integer | TCP port the server listens on. |
-| `WSGI_SSL_CERT` | No | path | Absolute path to the PEM-encoded TLS certificate file.  **Both** `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` must be present to enable HTTPS. |
-| `WSGI_SSL_PRIVKEY` | No | path | Absolute path to the PEM-encoded private key file that corresponds to `WSGI_SSL_CERT`. |
+| Setting | Required | Type | Default | Description |
+|---------|----------|------|---------|-------------|
+| `WSGI_SOCKET_HOST` | Yes | string | — | Hostname or IP address the server binds to.  Use `127.0.0.1` to restrict to localhost or `0.0.0.0` to listen on all interfaces. |
+| `WSGI_SOCKET_PORT` | Yes | integer | — | TCP port the server listens on. |
+| `WSGI_SSL_CERT` | No | path | — | Absolute path to the PEM-encoded TLS certificate file.  **Both** `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` must be present to enable HTTPS. |
+| `WSGI_SSL_PRIVKEY` | No | path | — | Absolute path to the PEM-encoded private key file that corresponds to `WSGI_SSL_CERT`. |
+| `WSGI_THREAD_POOL` | No | integer | `30` | Number of CherryPy worker threads.  CherryPy's built-in default is 10, which bottlenecks under modest concurrency — excess clients queue in the socket accept backlog until a worker is free.  Increase this value if you observe requests timing out under load.  When this key is absent from the ini file, the application defaults to `30`. |
 
 When `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` are omitted, the service runs over plain HTTP.
 
@@ -135,6 +136,11 @@ WSGI_SOCKET_HOST = 0.0.0.0
 WSGI_SOCKET_PORT = 8443
 WSGI_SSL_CERT    = /etc/grapinator/server.crt
 WSGI_SSL_PRIVKEY = /etc/grapinator/server.key
+# CherryPy worker threads. CherryPy's built-in default is 10, which
+# bottlenecks at modest concurrency (excess clients queue in the socket
+# accept backlog until a worker frees up). 30 is a sane starting point;
+# raise it if you see requests piling up under load.
+WSGI_THREAD_POOL = 30
 ```
 
 ---

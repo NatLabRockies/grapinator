@@ -108,6 +108,7 @@ class Settings(object):
     WSGI_SOCKET_PORT = None
     WSGI_SSL_CERT = None       # Optional: path to TLS certificate file
     WSGI_SSL_PRIVKEY = None    # Optional: path to TLS private key file
+    WSGI_THREAD_POOL = 30      # CherryPy worker thread pool size (default 30)
 
     # CORS policy settings
     CORS_ENABLE = None
@@ -206,6 +207,11 @@ class Settings(object):
             if properties.has_option('WSGI', 'WSGI_SSL_CERT') and properties.has_option('WSGI', 'WSGI_SSL_PRIVKEY'):
                 self.WSGI_SSL_CERT = properties.get('WSGI', 'WSGI_SSL_CERT')
                 self.WSGI_SSL_PRIVKEY = properties.get('WSGI', 'WSGI_SSL_PRIVKEY')
+            # Thread pool is optional; falls back to the class-level default (30)
+            # when the [WSGI] section omits it. CherryPy's own default is 10,
+            # which is too small for typical API concurrency.
+            if properties.has_option('WSGI', 'WSGI_THREAD_POOL'):
+                self.WSGI_THREAD_POOL = properties.getint('WSGI', 'WSGI_THREAD_POOL')
 
             # load CORS
             self.CORS_ENABLE = properties.getboolean('CORS', 'CORS_ENABLE')
