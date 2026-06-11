@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        
         {
             "name": "Python: Run grapinator",
             "type": "python",
@@ -26,6 +27,33 @@
             "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
             "env": {
                 "GRAPINATOR_CONFIG": "/resources/grapinator_rbac_keycloakdev.ini"
+            }
+        },
+        {
+            "name": "Python: Run grapinator (resources.test)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
+            "env": {
+                "GRAPINATOR_CONFIG": "/resources.test/grapinator.ini"
+            }
+        },
+        {
+            "name": "Python: Run grapinator (RBAC resources.test)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
+            "env": {
+                "GRAPINATOR_CONFIG": "/resources.test/grapinator_rbac.ini"
+            }
+        },
+        {
+            "name": "Python: Run grapinator (RBAC keycloak resources.test)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/grapinator/svc_cherrypy.py",
+            "env": {
+                "GRAPINATOR_CONFIG": "/resources.test/grapinator_rbac_keycloak.ini"
             }
         },
         {
