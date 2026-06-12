@@ -229,9 +229,8 @@ def run_server():
     app_logged = WSGILogger(app_with_headers, handlers, ApacheFormatter())
     logger.debug('Middleware: WSGILogger (outermost)')
 
-    # Graft the decorated WSGI app into CherryPy's tree at the root path.
     cherrypy.tree.graft(app_logged, '/')
-    cherrypy.config.update({
+    cp_config = {
         'server.socket_host': settings.WSGI_SOCKET_HOST,
         'server.socket_port': settings.WSGI_SOCKET_PORT,
         'server.thread_pool': settings.WSGI_THREAD_POOL,
@@ -240,7 +239,18 @@ def run_server():
         'server.ssl_module': 'builtin',
         'server.ssl_certificate': settings.WSGI_SSL_CERT,
         'server.ssl_private_key': settings.WSGI_SSL_PRIVKEY,
-    })
+    }
+    # Apply optional enterprise tuning knobs only when explicitly configured.
+    # CherryPy's own defaults are used when these keys are absent.
+    if settings.WSGI_SOCKET_QUEUE_SIZE is not None:
+        cp_config['server.socket_queue_size'] = settings.WSGI_SOCKET_QUEUE_SIZE
+    if settings.WSGI_MAX_REQUEST_BODY_SIZE is not None:
+        cp_config['server.max_request_body_size'] = settings.WSGI_MAX_REQUEST_BODY_SIZE
+    if settings.WSGI_SHUTDOWN_TIMEOUT is not None:
+        cp_config['server.shutdown_timeout'] = settings.WSGI_SHUTDOWN_TIMEOUT
+    if settings.WSGI_ACCEPTED_QUEUE_SIZE is not None:
+        cp_config['server.accepted_queue_size'] = settings.WSGI_ACCEPTED_QUEUE_SIZE
+    cherrypy.config.update(cp_config)
     logger.info(
         'Starting CherryPy on %s:%s (TLS=%s auth_mode=%s)',
         settings.WSGI_SOCKET_HOST, settings.WSGI_SOCKET_PORT,

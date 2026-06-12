@@ -240,5 +240,146 @@ class TestSchemaSettingsGqlClasses(unittest.TestCase):
         self.assertIsNone(name_col['resolver_func'])
 
 
+# ---------------------------------------------------------------------------
+# Settings — connection pool defaults (issue #29)
+# ---------------------------------------------------------------------------
+
+class TestSettingsPoolDefaults(unittest.TestCase):
+    """Verify pool attribute defaults when pool keys are absent from the INI."""
+
+    @classmethod
+    def setUpClass(cls):
+        from grapinator import settings
+        cls.settings = settings
+
+    def test_pool_pre_ping_defaults_to_true(self):
+        """DB_POOL_PRE_PING must default to True to preserve pre-existing behaviour."""
+        self.assertTrue(self.settings.DB_POOL_PRE_PING)
+
+    def test_pool_size_is_none_or_int(self):
+        """DB_POOL_SIZE must be None (deferred to SA) or an int when configured."""
+        self.assertIsInstance(self.settings.DB_POOL_SIZE, (int, type(None)))
+
+    def test_pool_max_overflow_is_none_or_int(self):
+        self.assertIsInstance(self.settings.DB_POOL_MAX_OVERFLOW, (int, type(None)))
+
+    def test_pool_timeout_is_none_or_number(self):
+        self.assertIsInstance(self.settings.DB_POOL_TIMEOUT, (int, float, type(None)))
+
+    def test_pool_recycle_is_none_or_int(self):
+        self.assertIsInstance(self.settings.DB_POOL_RECYCLE, (int, type(None)))
+
+
+# ---------------------------------------------------------------------------
+# Settings — connection pool explicit values loaded from INI (issue #29)
+# ---------------------------------------------------------------------------
+
+class TestSettingsPoolExplicit(unittest.TestCase):
+    """Verify that pool keys present in the INI are loaded with the correct types."""
+
+    def _make_settings_with_pool(self, extra_options):
+        """Return a Settings instance whose CryptoConfigParser is mocked to
+        return a minimal valid config plus the given extra options."""
+        import configparser
+
+        base_options = {
+            ('WSGI', 'WSGI_SOCKET_HOST'): '127.0.0.1',
+            ('WSGI', 'WSGI_SOCKET_PORT'): '8443',
+            ('CORS', 'CORS_ENABLE'): 'False',
+            ('CORS', 'CORS_EXPOSE_ORIGINS'): '*',
+            ('CORS', 'CORS_ALLOW_METHODS'): 'GET, POST',
+            ('CORS', 'CORS_HEADER_MAX_AGE'): '1800',
+            ('CORS', 'CORS_ALLOW_HEADERS'): 'Content-Type',
+            ('CORS', 'CORS_EXPOSE_HEADERS'): 'Location',
+            ('CORS', 'CORS_SEND_WILDCARD'): 'True',
+            ('CORS', 'CORS_SUPPORTS_CREDENTIALS'): 'False',
+            ('HTTP_HEADERS', 'HTTP_HEADERS_XFRAME'): 'sameorigin',
+            ('HTTP_HEADERS', 'HTTP_HEADERS_XSS_PROTECTION'): '1; mode=block',
+            ('HTTP_HEADERS', 'HTTP_HEADER_CACHE_CONTROL'): 'no-cache',
+            ('HTTP_HEADERS', 'HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS'): 'nosniff',
+            ('HTTP_HEADERS', 'HTTP_HEADERS_REFERRER_POLICY'): 'strict-origin-when-cross-origin',
+            ('HTTP_HEADERS', 'HTTP_HEADERS_CONTENT_SECURITY_POLICY'): "default-src 'self'",
+            ('FLASK', 'FLASK_SERVER_NAME'): 'localhost:8443',
+            ('FLASK', 'FLASK_API_ENDPOINT'): '/gql',
+            ('FLASK', 'FLASK_DEBUG'): 'False',
+            ('SQLALCHEMY', 'DB_TYPE'): 'sqlite+pysqlite',
+            ('SQLALCHEMY', 'DB_CONNECT'): '/tmp/test.db',
+            ('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS'): 'False',
+            ('GRAPHENE', 'GQL_SCHEMA'): '/resources/schema.dct',
+        }
+        all_options = {**base_options, **extra_options}
+
+        mock_parser = MagicMock()
+        mock_parser.read = MagicMock()
+
+        sections = set(s for s, _ in all_options)
+        mock_parser.has_section = lambda s: s in sections
+
+        def has_option(section, key):
+            return (section, key) in all_options
+
+        def get(section, key):
+            return all_options[(section, key)]
+
+        def getint(section, key):
+            return int(all_options[(section, key)])
+
+        def getfloat(section, key):
+            return float(all_options[(section, key)])
+
+        def getboolean(section, key):
+            v = all_options[(section, key)].strip().lower()
+            return v in ('1', 'yes', 'true', 'on')
+
+        mock_parser.has_option = has_option
+        mock_parser.get = get
+        mock_parser.getint = getint
+        mock_parser.getfloat = getfloat
+        mock_parser.getboolean = getboolean
+
+        from grapinator.settings import Settings
+        with patch('crypto_config.cryptoconfigparser.CryptoConfigParser',
+                   return_value=mock_parser):
+            with patch.dict('os.environ', {'GQLAPI_CRYPT_KEY': 'testkey'}):
+                s = Settings(config_file='/resources/grapinator.ini')
+        return s
+
+    def test_pool_size_loaded_as_int(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_SIZE'): '20'})
+        self.assertEqual(s.DB_POOL_SIZE, 20)
+        self.assertIsInstance(s.DB_POOL_SIZE, int)
+
+    def test_pool_max_overflow_loaded_as_int(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_MAX_OVERFLOW'): '10'})
+        self.assertEqual(s.DB_POOL_MAX_OVERFLOW, 10)
+        self.assertIsInstance(s.DB_POOL_MAX_OVERFLOW, int)
+
+    def test_pool_timeout_loaded_as_float(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_TIMEOUT'): '15'})
+        self.assertEqual(s.DB_POOL_TIMEOUT, 15.0)
+        self.assertIsInstance(s.DB_POOL_TIMEOUT, float)
+
+    def test_pool_recycle_loaded_as_int(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_RECYCLE'): '1800'})
+        self.assertEqual(s.DB_POOL_RECYCLE, 1800)
+        self.assertIsInstance(s.DB_POOL_RECYCLE, int)
+
+    def test_pool_recycle_negative_one_allowed(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_RECYCLE'): '-1'})
+        self.assertEqual(s.DB_POOL_RECYCLE, -1)
+
+    def test_pool_pre_ping_can_be_set_false(self):
+        s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_PRE_PING'): 'False'})
+        self.assertFalse(s.DB_POOL_PRE_PING)
+
+    def test_pool_size_absent_stays_none(self):
+        s = self._make_settings_with_pool({})
+        self.assertIsNone(s.DB_POOL_SIZE)
+
+    def test_pool_recycle_absent_stays_none(self):
+        s = self._make_settings_with_pool({})
+        self.assertIsNone(s.DB_POOL_RECYCLE)
+
+
 if __name__ == '__main__':
     unittest.main()
