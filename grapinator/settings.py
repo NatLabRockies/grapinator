@@ -108,7 +108,11 @@ class Settings(object):
     WSGI_SOCKET_PORT = None
     WSGI_SSL_CERT = None       # Optional: path to TLS certificate file
     WSGI_SSL_PRIVKEY = None    # Optional: path to TLS private key file
-    WSGI_THREAD_POOL = 30      # CherryPy worker thread pool size (default 30)
+    WSGI_THREAD_POOL = 10      # CherryPy worker thread pool size (matches CherryPy's built-in default)
+    WSGI_SOCKET_QUEUE_SIZE = None    # OS TCP accept backlog (CherryPy default: 5)
+    WSGI_MAX_REQUEST_BODY_SIZE = None  # Max request body bytes, 0 = unlimited (CherryPy default: 0)
+    WSGI_SHUTDOWN_TIMEOUT = None     # Seconds to wait for in-flight requests on shutdown (CherryPy default: 5)
+    WSGI_ACCEPTED_QUEUE_SIZE = None  # Internal accept queue limit, -1 = unlimited (CherryPy default: -1)
 
     # CORS policy settings
     CORS_ENABLE = None
@@ -153,6 +157,16 @@ class Settings(object):
     DB_CONNECT = None
     DB_TYPE = None
     SQLALCHEMY_TRACK_MODIFICATIONS = None
+
+    # SQLAlchemy connection pool tuning (all optional; None defers to SA's default).
+    # Defaults below are appropriate for a single-developer SQLite environment.
+    # For Oracle/production deployments set these explicitly in the ini file —
+    # see the [SQLALCHEMY] section of grapinator.ini and docs/grapinator_ini.md.
+    DB_POOL_SIZE = None           # QueuePool persistent connections (SA default: 5)
+    DB_POOL_MAX_OVERFLOW = None   # Burst connections above DB_POOL_SIZE (SA default: 10)
+    DB_POOL_TIMEOUT = None        # Seconds to wait for a free connection (SA default: 30)
+    DB_POOL_RECYCLE = None        # Seconds before recycling a connection (SA default: -1 = never)
+    DB_POOL_PRE_PING = True       # Validate connection health before checkout (recommended: True)
     
     def __init__(self, **kwargs):
         """
@@ -207,11 +221,23 @@ class Settings(object):
             if properties.has_option('WSGI', 'WSGI_SSL_CERT') and properties.has_option('WSGI', 'WSGI_SSL_PRIVKEY'):
                 self.WSGI_SSL_CERT = properties.get('WSGI', 'WSGI_SSL_CERT')
                 self.WSGI_SSL_PRIVKEY = properties.get('WSGI', 'WSGI_SSL_PRIVKEY')
-            # Thread pool is optional; falls back to the class-level default (30)
-            # when the [WSGI] section omits it. CherryPy's own default is 10,
-            # which is too small for typical API concurrency.
+            # Thread pool is optional; falls back to the class-level default (10,
+            # matching CherryPy's own built-in default) when the [WSGI] section
+            # omits it.  Raise this in the ini file for production workloads and
+            # set DB_POOL_SIZE to the same value so every thread can hold a
+            # connection without queuing.
             if properties.has_option('WSGI', 'WSGI_THREAD_POOL'):
                 self.WSGI_THREAD_POOL = properties.getint('WSGI', 'WSGI_THREAD_POOL')
+            # Optional enterprise CherryPy tuning knobs — all default to None
+            # (CherryPy's own default is used when not set).
+            if properties.has_option('WSGI', 'WSGI_SOCKET_QUEUE_SIZE'):
+                self.WSGI_SOCKET_QUEUE_SIZE = properties.getint('WSGI', 'WSGI_SOCKET_QUEUE_SIZE')
+            if properties.has_option('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE'):
+                self.WSGI_MAX_REQUEST_BODY_SIZE = properties.getint('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE')
+            if properties.has_option('WSGI', 'WSGI_SHUTDOWN_TIMEOUT'):
+                self.WSGI_SHUTDOWN_TIMEOUT = properties.getint('WSGI', 'WSGI_SHUTDOWN_TIMEOUT')
+            if properties.has_option('WSGI', 'WSGI_ACCEPTED_QUEUE_SIZE'):
+                self.WSGI_ACCEPTED_QUEUE_SIZE = properties.getint('WSGI', 'WSGI_ACCEPTED_QUEUE_SIZE')
 
             # load CORS
             self.CORS_ENABLE = properties.getboolean('CORS', 'CORS_ENABLE')
@@ -265,6 +291,21 @@ class Settings(object):
                 self.DB_PASSWORD = _RedactedStr(self.DB_PASSWORD)
 
             self.SQLALCHEMY_TRACK_MODIFICATIONS = properties.getboolean('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS')
+
+            # Connection pool settings — all optional; None means use SQLAlchemy's
+            # own default.  Only values explicitly present in the ini file are
+            # loaded to avoid passing None to create_engine(), which would shadow
+            # SQLAlchemy's internal defaults.
+            if properties.has_option('SQLALCHEMY', 'DB_POOL_SIZE'):
+                self.DB_POOL_SIZE = properties.getint('SQLALCHEMY', 'DB_POOL_SIZE')
+            if properties.has_option('SQLALCHEMY', 'DB_POOL_MAX_OVERFLOW'):
+                self.DB_POOL_MAX_OVERFLOW = properties.getint('SQLALCHEMY', 'DB_POOL_MAX_OVERFLOW')
+            if properties.has_option('SQLALCHEMY', 'DB_POOL_TIMEOUT'):
+                self.DB_POOL_TIMEOUT = properties.getfloat('SQLALCHEMY', 'DB_POOL_TIMEOUT')
+            if properties.has_option('SQLALCHEMY', 'DB_POOL_RECYCLE'):
+                self.DB_POOL_RECYCLE = properties.getint('SQLALCHEMY', 'DB_POOL_RECYCLE')
+            if properties.has_option('SQLALCHEMY', 'DB_POOL_PRE_PING'):
+                self.DB_POOL_PRE_PING = properties.getboolean('SQLALCHEMY', 'DB_POOL_PRE_PING')
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
@@ -328,6 +369,11 @@ class Settings(object):
             logger.debug(
                 'Settings: DB_TYPE=%s AUTH_MODE=%s GRAPHIQL_ACCESS=%s',
                 self.DB_TYPE, self.AUTH_MODE, self.GRAPHIQL_ACCESS,
+            )
+            logger.debug(
+                'Settings: pool_size=%s max_overflow=%s timeout=%s recycle=%s pre_ping=%s',
+                self.DB_POOL_SIZE, self.DB_POOL_MAX_OVERFLOW,
+                self.DB_POOL_TIMEOUT, self.DB_POOL_RECYCLE, self.DB_POOL_PRE_PING,
             )
 
         except cryptoconfigparser.ParsingError as err:

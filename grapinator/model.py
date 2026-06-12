@@ -30,10 +30,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# convert_unicode parameter was removed in SQLAlchemy 2.0.
-# pool_pre_ping=True ensures stale connections are recycled before use.
-engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
-logger.info('Database engine created: %s', settings.DB_TYPE)
+# Build pool kwargs from settings — only pass values explicitly set in the ini
+# file (non-None) so SQLAlchemy's own defaults are never shadowed with None.
+# pool_pre_ping defaults to True at the class level (preserving the previous
+# hardcoded behaviour) and can be set to False in the ini for low-latency links.
+pool_kwargs = {'pool_pre_ping': settings.DB_POOL_PRE_PING}
+if settings.DB_POOL_SIZE is not None:
+    pool_kwargs['pool_size'] = settings.DB_POOL_SIZE
+if settings.DB_POOL_MAX_OVERFLOW is not None:
+    pool_kwargs['max_overflow'] = settings.DB_POOL_MAX_OVERFLOW
+if settings.DB_POOL_TIMEOUT is not None:
+    pool_kwargs['pool_timeout'] = settings.DB_POOL_TIMEOUT
+if settings.DB_POOL_RECYCLE is not None:
+    pool_kwargs['pool_recycle'] = settings.DB_POOL_RECYCLE
+
+engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, **pool_kwargs)
+logger.info(
+    'Database engine created: %s  pool_size=%s max_overflow=%s recycle=%s pre_ping=%s',
+    settings.DB_TYPE,
+    settings.DB_POOL_SIZE,
+    settings.DB_POOL_MAX_OVERFLOW,
+    settings.DB_POOL_RECYCLE,
+    settings.DB_POOL_PRE_PING,
+)
 
 # Scoped session ties a single Session instance to the current thread/request
 # context.  autocommit=False means callers must explicitly commit transactions.

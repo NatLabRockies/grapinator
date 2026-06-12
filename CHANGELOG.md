@@ -2,7 +2,41 @@
 
 All notable changes to Grapinator
 
-## [Unreleased]
+## [2.1.10] - 2026-06-12
+
+### Changed
+
+- **Reset `WSGI_THREAD_POOL` class default to 10** (`grapinator/settings.py`, issue #29)
+  — The class-level fallback was 30, which did not match CherryPy's own built-in
+  default of 10 and gave a false impression that 30 was a framework value.  The
+  class default is now 10.  All bundled INI files already set the value explicitly,
+  so no deployment is silently affected.
+
+### Added
+
+- **Configurable SQLAlchemy connection pool settings** (`grapinator/settings.py`,
+  `grapinator/model.py`, issue #29)
+  — Five new optional `[SQLALCHEMY]` INI keys expose the SQLAlchemy QueuePool
+  parameters that were previously hardcoded (or left at library defaults):
+  `DB_POOL_SIZE`, `DB_POOL_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE`,
+  and `DB_POOL_PRE_PING`.  When a key is omitted the SQLAlchemy default is used,
+  so existing deployments continue to work unchanged.  `DB_POOL_RECYCLE = 1800`
+  is strongly recommended for Oracle deployments to prevent `ORA-03135` /
+  `ORA-02396` errors caused by Oracle idle-session timeouts silently closing pool
+  connections.  Class-level defaults are appropriate for a SQLite development
+  environment (all pool sizes at `None`, `DB_POOL_PRE_PING = True`).
+
+- **Configurable enterprise CherryPy tuning knobs** (`grapinator/settings.py`,
+  `grapinator/svc_cherrypy.py`, issue #29)
+  — Four new optional `[WSGI]` INI keys wire the CherryPy server parameters that
+  previously could not be adjusted without editing source code:
+  `WSGI_SOCKET_QUEUE_SIZE` (OS TCP accept backlog), `WSGI_MAX_REQUEST_BODY_SIZE`
+  (request body limit), `WSGI_SHUTDOWN_TIMEOUT` (graceful drain window), and
+  `WSGI_ACCEPTED_QUEUE_SIZE` (internal accept queue limit).  All keys are optional
+  and fall back to CherryPy's own defaults when absent, so existing deployments
+  are unaffected.  Recommended enterprise values are documented in
+  `docs/grapinator_ini.md` and provided as commented-out examples in all bundled
+  INI templates.
 
 ## [2.1.9] - 2026-06-10
 

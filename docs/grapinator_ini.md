@@ -125,22 +125,37 @@ Network and TLS settings for the CherryPy WSGI server.
 | `WSGI_SOCKET_PORT` | Yes | integer | — | TCP port the server listens on. |
 | `WSGI_SSL_CERT` | No | path | — | Absolute path to the PEM-encoded TLS certificate file.  **Both** `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` must be present to enable HTTPS. |
 | `WSGI_SSL_PRIVKEY` | No | path | — | Absolute path to the PEM-encoded private key file that corresponds to `WSGI_SSL_CERT`. |
-| `WSGI_THREAD_POOL` | No | integer | `30` | Number of CherryPy worker threads.  CherryPy's built-in default is 10, which bottlenecks under modest concurrency — excess clients queue in the socket accept backlog until a worker is free.  Increase this value if you observe requests timing out under load.  When this key is absent from the ini file, the application defaults to `30`. |
+| `WSGI_THREAD_POOL` | No | integer | `10` | Number of CherryPy worker threads (matches CherryPy's own built-in default).  For production Oracle deployments set this equal to `DB_POOL_SIZE` so every thread can hold a database connection simultaneously without queuing. |
+| `WSGI_SOCKET_QUEUE_SIZE` | No | integer | `5` | OS-level TCP accept backlog.  Raise to `20` or higher on servers that receive brief traffic spikes to prevent connection refusals before a worker thread is free.  *(CherryPy default: 5)* |
+| `WSGI_MAX_REQUEST_BODY_SIZE` | No | integer | `0` | Maximum allowed request body size in bytes.  `0` means unlimited.  Set to `1048576` (1 MB) in production to prevent oversized GraphQL query payloads from exhausting memory.  *(CherryPy default: 0)* |
+| `WSGI_SHUTDOWN_TIMEOUT` | No | integer | `5` | Seconds CherryPy waits for in-flight requests to complete before forcibly shutting down.  Raise to `10`–`15` when Oracle queries may take several seconds to return results.  *(CherryPy default: 5)* |
+| `WSGI_ACCEPTED_QUEUE_SIZE` | No | integer | `-1` | Limit on CherryPy's internal accept queue (requests waiting for a worker thread).  `-1` means unlimited.  Setting this to `100`–`200` puts a cap on memory growth during sustained overload.  *(CherryPy default: -1)* |
 
 When `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` are omitted, the service runs over plain HTTP.
 
-**Example (HTTPS):**
+**Example (HTTPS, SQLite/dev):**
 ```ini
 [WSGI]
-WSGI_SOCKET_HOST = 0.0.0.0
+WSGI_SOCKET_HOST = 127.0.0.1
 WSGI_SOCKET_PORT = 8443
 WSGI_SSL_CERT    = /etc/grapinator/server.crt
 WSGI_SSL_PRIVKEY = /etc/grapinator/server.key
-# CherryPy worker threads. CherryPy's built-in default is 10, which
-# bottlenecks at modest concurrency (excess clients queue in the socket
-# accept backlog until a worker frees up). 30 is a sane starting point;
-# raise it if you see requests piling up under load.
-WSGI_THREAD_POOL = 30
+WSGI_THREAD_POOL = 10
+```
+
+**Example (enterprise Oracle production):**
+```ini
+[WSGI]
+WSGI_SOCKET_HOST          = 0.0.0.0
+WSGI_SOCKET_PORT          = 8443
+WSGI_SSL_CERT             = /etc/grapinator/server.crt
+WSGI_SSL_PRIVKEY          = /etc/grapinator/server.key
+# Match WSGI_THREAD_POOL to DB_POOL_SIZE — see [SQLALCHEMY] below.
+WSGI_THREAD_POOL          = 20
+WSGI_SOCKET_QUEUE_SIZE    = 20
+WSGI_MAX_REQUEST_BODY_SIZE = 1048576
+WSGI_SHUTDOWN_TIMEOUT     = 10
+WSGI_ACCEPTED_QUEUE_SIZE  = 100
 ```
 
 ---
@@ -249,6 +264,11 @@ not require authentication (e.g. SQLite).  `DB_PASSWORD` supports CryptoConfig e
 | `SQLALCHEMY_TRACK_MODIFICATIONS` | Yes | boolean | When `True`, Flask-SQLAlchemy emits a signal on every model change.  Set to `False` to suppress the deprecation warning and reduce memory overhead. |
 | `ORCL_NLS_LANG` | No | string | *(Oracle only)* Value written to the `NLS_LANG` environment variable before the connection is established (e.g. `AMERICAN_AMERICA.AL32UTF8`). |
 | `ORCL_NLS_DATE_FORMAT` | No | string | *(Oracle only)* Value written to the `NLS_DATE_FORMAT` environment variable (e.g. `YYYY-MM-DD HH24:MI:SS`). |
+| `DB_POOL_SIZE` | No | integer | Number of connections kept open in the SQLAlchemy `QueuePool`.  **Rule of thumb: set equal to `WSGI_THREAD_POOL`** so every CherryPy worker can hold a connection simultaneously without queuing.  *(SQLAlchemy default: 5)* |
+| `DB_POOL_MAX_OVERFLOW` | No | integer | Extra connections allowed above `DB_POOL_SIZE` during traffic bursts.  These connections are closed immediately after use rather than returned to the pool.  Total maximum Oracle sessions = `DB_POOL_SIZE + DB_POOL_MAX_OVERFLOW`.  *(SQLAlchemy default: 10)* |
+| `DB_POOL_TIMEOUT` | No | float | Seconds to block waiting for a free connection before raising a `TimeoutError`.  Set this lower than your upstream client timeout so the caller receives a clean error instead of a silent hang.  *(SQLAlchemy default: 30)* |
+| `DB_POOL_RECYCLE` | No | integer | Seconds after which a pooled connection is proactively replaced.  **Critical for Oracle**: `SQLNET.EXPIRE_TIME` (server-level) and the user-profile `IDLE_TIME` setting will silently close idle connections, producing `ORA-03135` or `ORA-02396` errors.  Set this below the shortest Oracle idle timeout on your server (commonly 1 800 s / 30 min).  Use `-1` to disable recycling (not recommended for Oracle).  *(SQLAlchemy default: -1)* |
+| `DB_POOL_PRE_PING` | No | boolean | When `True` (the default), SQLAlchemy issues a lightweight round-trip before each connection checkout to detect dead connections.  This adds roughly 1 ms per request but prevents `ORA-03135` / `ORA-02396` errors from propagating to API clients.  Set to `False` only on low-latency links where the extra round-trip is undesirable.  *(SQLAlchemy default: False; Grapinator default: True)* |
 
 The full SQLAlchemy database URI is assembled at runtime:
 
@@ -258,32 +278,49 @@ The full SQLAlchemy database URI is assembled at runtime:
 **Example (SQLite):**
 ```ini
 [SQLALCHEMY]
-DB_TYPE                       = sqlite+pysqlite
-DB_CONNECT                    = /db/northwind.db
+DB_TYPE                        = sqlite+pysqlite
+DB_CONNECT                     = /db/northwind.db
 SQLALCHEMY_TRACK_MODIFICATIONS = False
+# Pool settings are left at SQLAlchemy defaults for SQLite (single-developer use).
 ```
 
 **Example (MySQL with encrypted password):**
 ```ini
 [SQLALCHEMY]
-DB_TYPE                       = mysql+pymysql
-DB_USER                       = grapinator
-DB_PASSWORD                   = enc(gAAAAABn...)
-DB_CONNECT                    = db.example.com/mydb
+DB_TYPE                        = mysql+pymysql
+DB_USER                        = grapinator
+DB_PASSWORD                    = enc(gAAAAABn...)
+DB_CONNECT                     = db.example.com/mydb
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 ```
 
-**Example (Oracle with NLS settings):**
+**Example (Oracle with pool settings and NLS):**
 ```ini
 [SQLALCHEMY]
-DB_TYPE                       = oracle+oracledb
-DB_USER                       = grapinator
-DB_PASSWORD                   = enc(gAAAAABn...)
-DB_CONNECT                    = db.example.com:1521/ORCL
+DB_TYPE                        = oracle+oracledb
+DB_USER                        = grapinator
+DB_PASSWORD                    = enc(gAAAAABn...)
+DB_CONNECT                     = db.example.com:1521/ORCL
 SQLALCHEMY_TRACK_MODIFICATIONS = False
-ORCL_NLS_LANG                 = AMERICAN_AMERICA.AL32UTF8
-ORCL_NLS_DATE_FORMAT          = YYYY-MM-DD HH24:MI:SS
+ORCL_NLS_LANG                  = AMERICAN_AMERICA.AL32UTF8
+ORCL_NLS_DATE_FORMAT           = YYYY-MM-DD HH24:MI:SS
+# Match DB_POOL_SIZE to WSGI_THREAD_POOL so every thread can hold a connection.
+DB_POOL_SIZE          = 20
+DB_POOL_MAX_OVERFLOW  = 10
+DB_POOL_TIMEOUT       = 15
+# Recycle connections every 30 min — set below your Oracle IDLE_TIME profile limit.
+DB_POOL_RECYCLE       = 1800
+DB_POOL_PRE_PING      = True
 ```
+
+> **Oracle idle-session timeout note:** Two mechanisms can silently close idle pool
+> connections on Oracle servers.  Query your DBA:
+> ```sql
+> SELECT PROFILE, RESOURCE_NAME, LIMIT
+>   FROM DBA_PROFILES
+>  WHERE RESOURCE_NAME = 'IDLE_TIME';
+> ```
+> Set `DB_POOL_RECYCLE` to 60% of the shortest `IDLE_TIME` limit you find.
 
 ---
 
