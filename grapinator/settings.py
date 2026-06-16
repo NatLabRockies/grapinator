@@ -167,6 +167,7 @@ class Settings(object):
     DB_POOL_TIMEOUT = None        # Seconds to wait for a free connection (SA default: 30)
     DB_POOL_RECYCLE = None        # Seconds before recycling a connection (SA default: -1 = never)
     DB_POOL_PRE_PING = True       # Validate connection health before checkout (recommended: True)
+    DB_CALL_TIMEOUT = None        # Per-call timeout in milliseconds (oracle+oracledb only; None = no limit)
     
     def __init__(self, **kwargs):
         """
@@ -306,6 +307,8 @@ class Settings(object):
                 self.DB_POOL_RECYCLE = properties.getint('SQLALCHEMY', 'DB_POOL_RECYCLE')
             if properties.has_option('SQLALCHEMY', 'DB_POOL_PRE_PING'):
                 self.DB_POOL_PRE_PING = properties.getboolean('SQLALCHEMY', 'DB_POOL_PRE_PING')
+            if properties.has_option('SQLALCHEMY', 'DB_CALL_TIMEOUT'):
+                self.DB_CALL_TIMEOUT = properties.getint('SQLALCHEMY', 'DB_CALL_TIMEOUT')
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
