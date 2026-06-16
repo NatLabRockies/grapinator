@@ -44,14 +44,20 @@ if settings.DB_POOL_TIMEOUT is not None:
 if settings.DB_POOL_RECYCLE is not None:
     pool_kwargs['pool_recycle'] = settings.DB_POOL_RECYCLE
 
-engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, **pool_kwargs)
+# Build connect_args — only oracle+oracledb honours call_timeout (milliseconds).
+connect_args = {}
+if settings.DB_CALL_TIMEOUT is not None:
+    connect_args['call_timeout'] = settings.DB_CALL_TIMEOUT
+
+engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, connect_args=connect_args, **pool_kwargs)
 logger.info(
-    'Database engine created: %s  pool_size=%s max_overflow=%s recycle=%s pre_ping=%s',
+    'Database engine created: %s  pool_size=%s max_overflow=%s recycle=%s pre_ping=%s call_timeout=%s',
     settings.DB_TYPE,
     settings.DB_POOL_SIZE,
     settings.DB_POOL_MAX_OVERFLOW,
     settings.DB_POOL_RECYCLE,
     settings.DB_POOL_PRE_PING,
+    settings.DB_CALL_TIMEOUT,
 )
 
 # Scoped session ties a single Session instance to the current thread/request
