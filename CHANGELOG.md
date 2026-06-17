@@ -2,24 +2,6 @@
 
 All notable changes to Grapinator
 
-## [2.1.11] - 2026-06-16
-
-### Added
-
-- **Configurable per-call timeout for the Oracle driver** (`grapinator/settings.py`,
-  `grapinator/model.py`, issue #31)
-  — A new optional `[SQLALCHEMY]` INI key, `DB_CALL_TIMEOUT`, sets the
-  `call_timeout` parameter on the `oracle+oracledb` driver (value in
-  milliseconds).  When a query exceeds the limit, the driver cancels it and
-  raises a clean error before the upstream Nginx read timeout fires, giving API
-  clients a meaningful response instead of a silent hang.  When the key is
-  omitted (the default, `None`), no per-call timeout is applied and existing
-  deployments are unaffected.  A value of `270000` (270 s) is recommended for
-  production Oracle deployments — shorter than the typical Nginx 300 s read
-  timeout.  All Oracle test ini files (`gODLDEVL.ini`, `gTEST.ini`,
-  `resources.test/grapinator.ini`) now ship with this value enabled; all SQLite
-  dev ini files carry it as a commented-out example.
-
 ## [2.1.10] - 2026-06-12
 
 ### Changed

@@ -269,7 +269,6 @@ not require authentication (e.g. SQLite).  `DB_PASSWORD` supports CryptoConfig e
 | `DB_POOL_TIMEOUT` | No | float | Seconds to block waiting for a free connection before raising a `TimeoutError`.  Set this lower than your upstream client timeout so the caller receives a clean error instead of a silent hang.  *(SQLAlchemy default: 30)* |
 | `DB_POOL_RECYCLE` | No | integer | Seconds after which a pooled connection is proactively replaced.  **Critical for Oracle**: `SQLNET.EXPIRE_TIME` (server-level) and the user-profile `IDLE_TIME` setting will silently close idle connections, producing `ORA-03135` or `ORA-02396` errors.  Set this below the shortest Oracle idle timeout on your server (commonly 1 800 s / 30 min).  Use `-1` to disable recycling (not recommended for Oracle).  *(SQLAlchemy default: -1)* |
 | `DB_POOL_PRE_PING` | No | boolean | When `True` (the default), SQLAlchemy issues a lightweight round-trip before each connection checkout to detect dead connections.  This adds roughly 1 ms per request but prevents `ORA-03135` / `ORA-02396` errors from propagating to API clients.  Set to `False` only on low-latency links where the extra round-trip is undesirable.  *(SQLAlchemy default: False; Grapinator default: True)* |
-| `DB_CALL_TIMEOUT` | No | integer | *(oracle+oracledb only)* Per-call timeout in **milliseconds**.  When a database query runs longer than this limit the driver cancels it and raises a clean error — ensuring the API returns a response before the upstream Nginx read timeout fires.  When omitted (the default), no per-call limit is applied.  Recommended production value: `270000` (270 s, below a typical 300 s Nginx timeout).  Has no effect on SQLite or other non-Oracle dialects. |
 
 The full SQLAlchemy database URI is assembled at runtime:
 
@@ -312,8 +311,6 @@ DB_POOL_TIMEOUT       = 15
 # Recycle connections every 30 min — set below your Oracle IDLE_TIME profile limit.
 DB_POOL_RECYCLE       = 1800
 DB_POOL_PRE_PING      = True
-# Cancel queries that run longer than 270 s so the API replies before Nginx times out.
-DB_CALL_TIMEOUT       = 270000
 ```
 
 > **Oracle idle-session timeout note:** Two mechanisms can silently close idle pool
