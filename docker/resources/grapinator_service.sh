@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 # Author: David Martin
-# Proxy service behind a production WSGI server
+# Launch the Grapinator GraphQL service under Gunicorn (replaces CherryPy in 2.1.12).
 
 cd /opt/grapinator
 source venv/bin/activate
-python grapinator/svc_cherrypy.py
+exec gunicorn \
+    --config /opt/grapinator/grapinator/resources/gunicorn.conf.py \
+    grapinator.svc_gunicorn:application

@@ -103,16 +103,35 @@ class Settings(object):
     **GRAPHENE** — Path to the schema dictionary file.
     """
 
-    # WSGI / CherryPy server settings
+    # WSGI socket / TLS settings.
+    #
+    # As of release 2.1.12 the production WSGI server is Gunicorn (not
+    # CherryPy).  Gunicorn reads WSGI_SOCKET_HOST / WSGI_SOCKET_PORT via the
+    # bundled gunicorn.conf.py.  WSGI_SSL_CERT / WSGI_SSL_PRIVKEY are
+    # deprecated -- TLS is now terminated by Nginx in front of Grapinator --
+    # and a WARNING is logged at boot when either is present.
     WSGI_SOCKET_HOST = None
     WSGI_SOCKET_PORT = None
-    WSGI_SSL_CERT = None       # Optional: path to TLS certificate file
-    WSGI_SSL_PRIVKEY = None    # Optional: path to TLS private key file
-    WSGI_THREAD_POOL = 10      # CherryPy worker thread pool size (matches CherryPy's built-in default)
-    WSGI_SOCKET_QUEUE_SIZE = None    # OS TCP accept backlog (CherryPy default: 5)
-    WSGI_MAX_REQUEST_BODY_SIZE = None  # Max request body bytes, 0 = unlimited (CherryPy default: 0)
-    WSGI_SHUTDOWN_TIMEOUT = None     # Seconds to wait for in-flight requests on shutdown (CherryPy default: 5)
-    WSGI_ACCEPTED_QUEUE_SIZE = None  # Internal accept queue limit, -1 = unlimited (CherryPy default: -1)
+    WSGI_SSL_CERT = None              # deprecated: TLS terminated by Nginx
+    WSGI_SSL_PRIVKEY = None           # deprecated: TLS terminated by Nginx
+    WSGI_SOCKET_QUEUE_SIZE = None     # repurposed -> Gunicorn `backlog`
+    WSGI_MAX_REQUEST_BODY_SIZE = None # deprecated: enforced by Nginx client_max_body_size
+    WSGI_SHUTDOWN_TIMEOUT = None      # repurposed -> Gunicorn `graceful_timeout`
+
+    # Gunicorn server settings (consumed by grapinator/resources/gunicorn.conf.py).
+    # GUNICORN_WORKERS defaults to (2 * os.cpu_count() + 1) per the documented
+    # sizing rule and is resolved at INI-load time; the other defaults match
+    # the values published in docs/gunicorn.md.
+    GUNICORN_WORKERS = None
+    GUNICORN_THREADS = 8
+    GUNICORN_WORKER_CLASS = 'gthread'
+    GUNICORN_WORKER_CONNECTIONS = 1000   # only used with async workers
+    GUNICORN_TIMEOUT = 30                # seconds; must exceed worst-case query
+    GUNICORN_KEEPALIVE = 75              # seconds; matches Nginx upstream keepalive
+    GUNICORN_MAX_REQUESTS = 1000         # worker auto-recycle
+    GUNICORN_MAX_REQUESTS_JITTER = 100
+    GUNICORN_LIMIT_REQUEST_LINE = 8190
+    GUNICORN_LIMIT_REQUEST_FIELD_SIZE = 8190
 
     # CORS policy settings
     CORS_ENABLE = None
@@ -167,6 +186,18 @@ class Settings(object):
     DB_POOL_TIMEOUT = None        # Seconds to wait for a free connection (SA default: 30)
     DB_POOL_RECYCLE = None        # Seconds before recycling a connection (SA default: -1 = never)
     DB_POOL_PRE_PING = True       # Validate connection health before checkout (recommended: True)
+
+    # Oracle per-connection knobs applied by grapinator.db_listener.
+    # See docs/grapinator_ini.md for the full description.
+    # ORACLE_CALL_TIMEOUT is mandatory when DB_TYPE contains 'oracle'; the
+    # default of 15000 ms (15 s) is applied silently if the INI omits it.
+    ORACLE_CALL_TIMEOUT = 15000
+    ORACLE_STMTCACHESIZE = None
+    ORACLE_AUTOCOMMIT = None
+    ORACLE_MODULE = 'grapinator'
+    ORACLE_ACTION = None
+    ORACLE_CLIENT_IDENTIFIER = None
+    ORACLE_CURRENT_SCHEMA = None
     
     def __init__(self, **kwargs):
         """
@@ -217,27 +248,72 @@ class Settings(object):
             # load WSGI section
             self.WSGI_SOCKET_HOST = properties.get('WSGI', 'WSGI_SOCKET_HOST')
             self.WSGI_SOCKET_PORT = properties.getint('WSGI', 'WSGI_SOCKET_PORT')
-            # SSL cert and key are optional; only set when both options are present.
-            if properties.has_option('WSGI', 'WSGI_SSL_CERT') and properties.has_option('WSGI', 'WSGI_SSL_PRIVKEY'):
-                self.WSGI_SSL_CERT = properties.get('WSGI', 'WSGI_SSL_CERT')
-                self.WSGI_SSL_PRIVKEY = properties.get('WSGI', 'WSGI_SSL_PRIVKEY')
-            # Thread pool is optional; falls back to the class-level default (10,
-            # matching CherryPy's own built-in default) when the [WSGI] section
-            # omits it.  Raise this in the ini file for production workloads and
-            # set DB_POOL_SIZE to the same value so every thread can hold a
-            # connection without queuing.
-            if properties.has_option('WSGI', 'WSGI_THREAD_POOL'):
-                self.WSGI_THREAD_POOL = properties.getint('WSGI', 'WSGI_THREAD_POOL')
-            # Optional enterprise CherryPy tuning knobs — all default to None
-            # (CherryPy's own default is used when not set).
+            # WSGI_SSL_* keys are deprecated -- TLS is now terminated by Nginx.
+            # We still accept (and ignore) them so existing deployments keep
+            # booting; a WARNING tells the operator to remove them.
+            if properties.has_option('WSGI', 'WSGI_SSL_CERT') or properties.has_option('WSGI', 'WSGI_SSL_PRIVKEY'):
+                logger.warning(
+                    'WSGI_SSL_CERT/WSGI_SSL_PRIVKEY are deprecated as of 2.1.12 '
+                    '-- TLS is now terminated by Nginx in front of Grapinator. '
+                    'These keys are ignored; remove them from grapinator.ini.'
+                )
+                if properties.has_option('WSGI', 'WSGI_SSL_CERT'):
+                    self.WSGI_SSL_CERT = properties.get('WSGI', 'WSGI_SSL_CERT')
+                if properties.has_option('WSGI', 'WSGI_SSL_PRIVKEY'):
+                    self.WSGI_SSL_PRIVKEY = properties.get('WSGI', 'WSGI_SSL_PRIVKEY')
+            if properties.has_option('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE'):
+                logger.warning(
+                    'WSGI_MAX_REQUEST_BODY_SIZE is deprecated as of 2.1.12 -- '
+                    'enforce request size at Nginx using client_max_body_size.'
+                )
+                self.WSGI_MAX_REQUEST_BODY_SIZE = properties.getint('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE')
+            # WSGI_SOCKET_QUEUE_SIZE and WSGI_SHUTDOWN_TIMEOUT have been
+            # repurposed as Gunicorn `backlog` / `graceful_timeout` inputs and
+            # remain valid INI keys.
             if properties.has_option('WSGI', 'WSGI_SOCKET_QUEUE_SIZE'):
                 self.WSGI_SOCKET_QUEUE_SIZE = properties.getint('WSGI', 'WSGI_SOCKET_QUEUE_SIZE')
-            if properties.has_option('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE'):
-                self.WSGI_MAX_REQUEST_BODY_SIZE = properties.getint('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE')
             if properties.has_option('WSGI', 'WSGI_SHUTDOWN_TIMEOUT'):
                 self.WSGI_SHUTDOWN_TIMEOUT = properties.getint('WSGI', 'WSGI_SHUTDOWN_TIMEOUT')
-            if properties.has_option('WSGI', 'WSGI_ACCEPTED_QUEUE_SIZE'):
-                self.WSGI_ACCEPTED_QUEUE_SIZE = properties.getint('WSGI', 'WSGI_ACCEPTED_QUEUE_SIZE')
+            # WSGI_THREAD_POOL and WSGI_ACCEPTED_QUEUE_SIZE were removed in
+            # 2.1.12 (Gunicorn does not expose equivalents).  Hard-fail boot
+            # rather than silently dropping the operator's intent.
+            for _removed in ('WSGI_THREAD_POOL', 'WSGI_ACCEPTED_QUEUE_SIZE'):
+                if properties.has_option('WSGI', _removed):
+                    logger.error(
+                        '%s was removed in 2.1.12; use the [GUNICORN] section '
+                        'instead (see docs/gunicorn.md). Remove this key from '
+                        'grapinator.ini and restart.', _removed
+                    )
+                    raise RuntimeError(
+                        f'{_removed} is no longer supported (removed in 2.1.12).'
+                    )
+
+            # load GUNICORN section (entirely optional -- every key has a default)
+            if properties.has_section('GUNICORN'):
+                if properties.has_option('GUNICORN', 'GUNICORN_WORKERS'):
+                    self.GUNICORN_WORKERS = properties.getint('GUNICORN', 'GUNICORN_WORKERS')
+                if properties.has_option('GUNICORN', 'GUNICORN_THREADS'):
+                    self.GUNICORN_THREADS = properties.getint('GUNICORN', 'GUNICORN_THREADS')
+                if properties.has_option('GUNICORN', 'GUNICORN_WORKER_CLASS'):
+                    self.GUNICORN_WORKER_CLASS = properties.get('GUNICORN', 'GUNICORN_WORKER_CLASS')
+                if properties.has_option('GUNICORN', 'GUNICORN_WORKER_CONNECTIONS'):
+                    self.GUNICORN_WORKER_CONNECTIONS = properties.getint('GUNICORN', 'GUNICORN_WORKER_CONNECTIONS')
+                if properties.has_option('GUNICORN', 'GUNICORN_TIMEOUT'):
+                    self.GUNICORN_TIMEOUT = properties.getint('GUNICORN', 'GUNICORN_TIMEOUT')
+                if properties.has_option('GUNICORN', 'GUNICORN_KEEPALIVE'):
+                    self.GUNICORN_KEEPALIVE = properties.getint('GUNICORN', 'GUNICORN_KEEPALIVE')
+                if properties.has_option('GUNICORN', 'GUNICORN_MAX_REQUESTS'):
+                    self.GUNICORN_MAX_REQUESTS = properties.getint('GUNICORN', 'GUNICORN_MAX_REQUESTS')
+                if properties.has_option('GUNICORN', 'GUNICORN_MAX_REQUESTS_JITTER'):
+                    self.GUNICORN_MAX_REQUESTS_JITTER = properties.getint('GUNICORN', 'GUNICORN_MAX_REQUESTS_JITTER')
+                if properties.has_option('GUNICORN', 'GUNICORN_LIMIT_REQUEST_LINE'):
+                    self.GUNICORN_LIMIT_REQUEST_LINE = properties.getint('GUNICORN', 'GUNICORN_LIMIT_REQUEST_LINE')
+                if properties.has_option('GUNICORN', 'GUNICORN_LIMIT_REQUEST_FIELD_SIZE'):
+                    self.GUNICORN_LIMIT_REQUEST_FIELD_SIZE = properties.getint('GUNICORN', 'GUNICORN_LIMIT_REQUEST_FIELD_SIZE')
+            # GUNICORN_WORKERS defaults to (2 * CPU + 1) per the documented
+            # sizing rule when not set in the INI.
+            if self.GUNICORN_WORKERS is None:
+                self.GUNICORN_WORKERS = 2 * (os.cpu_count() or 1) + 1
 
             # load CORS
             self.CORS_ENABLE = properties.getboolean('CORS', 'CORS_ENABLE')
@@ -307,6 +383,25 @@ class Settings(object):
             if properties.has_option('SQLALCHEMY', 'DB_POOL_PRE_PING'):
                 self.DB_POOL_PRE_PING = properties.getboolean('SQLALCHEMY', 'DB_POOL_PRE_PING')
 
+            # Oracle per-connection knobs (consumed by grapinator.db_listener).
+            # All optional; defaults are set at class level.
+            for _opt, _kind in (
+                ('ORACLE_CALL_TIMEOUT', 'int'),
+                ('ORACLE_STMTCACHESIZE', 'int'),
+                ('ORACLE_AUTOCOMMIT', 'bool'),
+                ('ORACLE_MODULE', 'str'),
+                ('ORACLE_ACTION', 'str'),
+                ('ORACLE_CLIENT_IDENTIFIER', 'str'),
+                ('ORACLE_CURRENT_SCHEMA', 'str'),
+            ):
+                if properties.has_option('SQLALCHEMY', _opt):
+                    if _kind == 'int':
+                        setattr(self, _opt, properties.getint('SQLALCHEMY', _opt))
+                    elif _kind == 'bool':
+                        setattr(self, _opt, properties.getboolean('SQLALCHEMY', _opt))
+                    else:
+                        setattr(self, _opt, properties.get('SQLALCHEMY', _opt))
+
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
 
@@ -337,6 +432,25 @@ class Settings(object):
                 os.environ['NLS_LANG'] = properties.get('SQLALCHEMY', 'ORCL_NLS_LANG')
             if properties.has_option('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT'):
                 os.environ['NLS_DATE_FORMAT'] = properties.get('SQLALCHEMY', 'ORCL_NLS_DATE_FORMAT')
+
+            # ORACLE_CALL_TIMEOUT must be strictly positive and strictly less
+            # than the Gunicorn request timeout (so the DB driver aborts the
+            # query before Gunicorn kills the worker).  Only enforced when
+            # the active dialect is Oracle.
+            if self.DB_TYPE and 'oracle' in self.DB_TYPE:
+                if self.ORACLE_CALL_TIMEOUT is None or self.ORACLE_CALL_TIMEOUT <= 0:
+                    raise RuntimeError(
+                        'ORACLE_CALL_TIMEOUT must be a positive integer (ms) '
+                        'when DB_TYPE is Oracle.'
+                    )
+                if self.ORACLE_CALL_TIMEOUT >= self.GUNICORN_TIMEOUT * 1000:
+                    raise RuntimeError(
+                        f'ORACLE_CALL_TIMEOUT ({self.ORACLE_CALL_TIMEOUT} ms) '
+                        f'must be strictly less than GUNICORN_TIMEOUT '
+                        f'({self.GUNICORN_TIMEOUT} s = {self.GUNICORN_TIMEOUT * 1000} ms) '
+                        'so the Oracle driver aborts the call before Gunicorn '
+                        'kills the worker.'
+                    )
 
             if self.AUTH_DEV_SECRET:
                 _DEFAULT_DEV_SECRET = 'change-me-local-dev-only'

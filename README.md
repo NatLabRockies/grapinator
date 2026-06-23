@@ -59,3 +59,17 @@ Unit tests are located in the 'tests' directory.
 ```
 GQLAPI_CRYPT_KEY=testkey python -m unittest discover -s tests -t . -v
 ```
+
+### Production deployment
+
+Grapinator ships with a Gunicorn entrypoint and a bundled Gunicorn config
+that reads from the same `grapinator.ini` you use for development:
+
+```
+gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
+```
+
+TLS termination, request-size limits, and per-IP rate limiting are handled
+by an Nginx reverse proxy in front of Gunicorn (Grapinator itself only
+speaks plain HTTP to Nginx).  See [docs/gunicorn.md](docs/gunicorn.md) and
+[docs/nginx.md](docs/nginx.md) for the production topology.

@@ -16,7 +16,8 @@ Logger names under test:
   - ``grapinator.model``       (model.py)
   - ``grapinator.schema``      (schema.py)
   - ``grapinator.app``         (app.py)
-  - ``grapinator.svc_cherrypy``(svc_cherrypy.py)
+  - ``grapinator.svc_gunicorn``(svc_gunicorn.py)
+  - ``grapinator.middleware``(middleware.py)
   - ``grapinator.auth``        (auth.py)
 
 Tests do NOT load a real ini file or database.  Logging calls in module-level
@@ -432,8 +433,11 @@ class TestLogLevelContract(unittest.TestCase):
     def test_app_logger_is_child(self):
         self._check_child_of_grapinator('grapinator.app')
 
-    def test_svc_cherrypy_logger_is_child(self):
-        self._check_child_of_grapinator('grapinator.svc_cherrypy')
+    def test_svc_gunicorn_logger_is_child(self):
+        self._check_child_of_grapinator('grapinator.svc_gunicorn')
+
+    def test_middleware_logger_is_child(self):
+        self._check_child_of_grapinator('grapinator.middleware')
 
     def test_warning_level_for_dev_secret(self):
         """AUTH_DEV_SECRET triggers WARNING, not DEBUG or INFO."""

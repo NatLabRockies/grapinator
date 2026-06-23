@@ -225,7 +225,8 @@ Grapinator is started with the RBAC ini file:
 
 ```bash
 docker compose -f docker/keycloak.yaml up -d
-GRAPINATOR_CONFIG=/resources/grapinator_rbac_keycloakdev.ini python grapinator/svc_cherrypy.py
+GRAPINATOR_CONFIG=/resources/grapinator_rbac_keycloakdev.ini \
+    gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 ```
 
 The `birth_date` field in the Northwind schema is restricted to the `hr` role.

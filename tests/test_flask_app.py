@@ -1,7 +1,7 @@
 """Unit tests for Flask app behaviour (grapinator/app.py).
 
 Covers:
-  - SecurityHeadersMiddleware : security response headers (svc_cherrypy.py)
+  - SecurityHeadersMiddleware : security response headers (middleware.py)
   - FixedGraphQLView          : bug-fixes for render_graphql_ide / graphql_ide_html
       Bug 1 — None rendered as JSON null (not Python 'None' string)
       Bug 2 — operation_name passed with snake_case key so the template
@@ -22,7 +22,7 @@ from . import context  # noqa: F401
 
 from graphql_server.flask.views import GraphQLView
 from grapinator.app import app, FixedGraphQLView
-from grapinator.svc_cherrypy import SecurityHeadersMiddleware, CorsMiddleware
+from grapinator.middleware import SecurityHeadersMiddleware, CorsMiddleware
 from grapinator import settings
 
 
