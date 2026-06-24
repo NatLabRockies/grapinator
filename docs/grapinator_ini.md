@@ -8,12 +8,21 @@ transparently decrypts any values that were encrypted with CryptoConfig (see [En
 
 ## Selecting the ini file at runtime
 
-By default Grapinator loads `grapinator/resources/grapinator.ini`.  Set the `GRAPINATOR_CONFIG`
-environment variable to override this path at startup without changing any code.  The path is
-resolved relative to the **`grapinator/` package directory** (same convention as `GQL_SCHEMA`).
+By default Grapinator loads `grapinator/resources/grapinator.ini` bundled with the installed
+package.  Set the `GRAPINATOR_CONFIG` environment variable to the **absolute path of any ini
+file** to override this at startup without changing any code.
+
+Grapinator derives the *resources directory* from the directory that contains the ini file and
+loads all other runtime files from that same directory:
+
+| File | How the path is determined |
+|---|---|
+| `grapinator.ini` | Value of `GRAPINATOR_CONFIG` (or the bundled default) |
+| `logging.conf` | Same directory as the ini file |
+| Schema file (`GQL_SCHEMA`) | Absolute path as specified in the ini file; if relative, resolved against the ini file's directory |
 
 ```bash
-# Use the default ini file
+# Use the default bundled ini file
 gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 
 # Use an alternate ini file (e.g. for RBAC testing)

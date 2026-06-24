@@ -6,6 +6,14 @@ All notable changes to Grapinator
 
 ### Changed
 
+- **`GRAPINATOR_CONFIG` now drives all resource file loading** (issue #35) — Grapinator
+  derives a *resources directory* from the directory that contains the ini file pointed to
+  by `GRAPINATOR_CONFIG`.  `logging.conf` is now loaded from that same directory instead of
+  being hardcoded to the bundled `grapinator/resources/` path.  A relative `GQL_SCHEMA` value
+  in the ini file is also resolved against the resources directory.  The default behaviour
+  (no env var set) is unchanged: the bundled `grapinator/resources/grapinator.ini` is used and
+  all files are loaded from `grapinator/resources/`.
+
 - **Production WSGI server: CherryPy → Gunicorn** (issue #34, design in `docs/new-design.md`)
   — CherryPy 18.10.0 has been removed from `install_requires` and the runtime
   stack.  Grapinator now ships with a Gunicorn entrypoint

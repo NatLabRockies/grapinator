@@ -238,10 +238,18 @@ class Settings(object):
             raise RuntimeError(f"Could not get env key: {err}")
 
         try:
-            # Resolve path relative to this module's directory and parse.
+            # Resolve the config file path.  A genuine absolute path (e.g. one
+            # produced by __init__.py from GRAPINATOR_CONFIG or the bundled
+            # default) is used as-is.  A legacy package-relative path like
+            # '/resources/grapinator.ini' — where the leading slash is NOT a
+            # real filesystem root but resolves to <package>/resources/ — falls
+            # back to the cwd-prefix interpretation for backward compatibility.
             cwd = path.abspath(path.dirname(__file__))
             properties = cryptoconfigparser.CryptoConfigParser(crypt_key=key)
-            properties_file = cwd + self.config_file
+            if path.isabs(self.config_file) and path.exists(self.config_file):
+                properties_file = self.config_file
+            else:
+                properties_file = cwd + self.config_file
             logger.debug('Settings: reading properties file: %s', properties_file)
             properties.read(properties_file)
 
