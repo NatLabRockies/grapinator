@@ -57,7 +57,7 @@ def _make_mock_settings(extra_options):
         ('SQLALCHEMY', 'DB_TYPE'): 'sqlite+pysqlite',
         ('SQLALCHEMY', 'DB_CONNECT'): '/tmp/test.db',
         ('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS'): 'False',
-        ('GRAPHENE', 'GQL_SCHEMA'): '/resources/schema.dct',
+        ('GRAPHENE', 'GQL_SCHEMA'): 'schema.dct',
     }
     all_options = {**base_options, **extra_options}
 

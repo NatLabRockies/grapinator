@@ -24,7 +24,7 @@ os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 from . import context  # noqa: F401 – adds project root to sys.path
 
 
-def _reload_init(env_overrides, gql_schema_value='/resources/schema.dct'):
+def _reload_init(env_overrides, gql_schema_value='schema.dct'):
     """Import (or reload) grapinator/__init__.py with a patched environment.
 
     *env_overrides* is merged into (not replacing) the real environment so that

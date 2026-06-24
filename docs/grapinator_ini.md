@@ -19,7 +19,7 @@ loads all other runtime files from that same directory:
 |---|---|
 | `grapinator.ini` | Value of `GRAPINATOR_CONFIG` (or the bundled default) |
 | `logging.conf` | Same directory as the ini file |
-| Schema file (`GQL_SCHEMA`) | Absolute path as specified in the ini file; if relative, resolved against the ini file's directory |
+| Schema file (`GQL_SCHEMA`) | Filename resolved against the ini file's directory; absolute paths used as-is |
 
 ```bash
 # Use the default bundled ini file
@@ -115,12 +115,12 @@ GraphQL schema configuration.
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| `GQL_SCHEMA` | path | Path to the schema dictionary file (`.dct`), **relative to the `grapinator/` package directory**.  See [schema_docs.md](schema_docs.md) for the file format. |
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
 
 **Example:**
 ```ini
 [GRAPHENE]
-GQL_SCHEMA = /resources/schema.dct
+GQL_SCHEMA = schema.dct
 ```
 
 ---

@@ -535,9 +535,15 @@ class SchemaSettings(object):
         """
         file = kwargs.pop('schema_file', None)
         if file != None:
-            # load file
+            # load file — accept a genuine absolute path (e.g. resolved by
+            # __init__.py from the resources directory) or fall back to the
+            # legacy cwd-prefix interpretation for package-relative paths.
             cwd = path.abspath(path.dirname(__file__))
-            self._schema_dict = self._loadSchemaDict(cwd + file)
+            if path.isabs(file) and path.exists(file):
+                schema_file_path = file
+            else:
+                schema_file_path = cwd + file
+            self._schema_dict = self._loadSchemaDict(schema_file_path)
 
             self._db_classes = self._make_db_classes()
             self._gql_classes = self._make_gql_classes()
