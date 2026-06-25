@@ -2,7 +2,7 @@
 
 All notable changes to Grapinator
 
-## [2.1.12] - unreleased
+## [2.1.12] - 2026-06-25
 
 ### Changed
 
