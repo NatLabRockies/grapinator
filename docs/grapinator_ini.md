@@ -309,6 +309,29 @@ not require authentication (e.g. SQLite).  `DB_PASSWORD` supports CryptoConfig e
 | `DB_POOL_RECYCLE` | No | integer | Seconds after which a pooled connection is proactively replaced.  **Critical for Oracle**: `SQLNET.EXPIRE_TIME` (server-level) and the user-profile `IDLE_TIME` setting will silently close idle connections, producing `ORA-03135` or `ORA-02396` errors.  Set this below the shortest Oracle idle timeout on your server (commonly 1 800 s / 30 min).  Use `-1` to disable recycling (not recommended for Oracle).  *(SQLAlchemy default: -1)* |
 | `DB_POOL_PRE_PING` | No | boolean | When `True` (the default), SQLAlchemy issues a lightweight round-trip before each connection checkout to detect dead connections.  This adds roughly 1 ms per request but prevents `ORA-03135` / `ORA-02396` errors from propagating to API clients.  Set to `False` only on low-latency links where the extra round-trip is undesirable.  *(SQLAlchemy default: False; Grapinator default: True)* |
 
+### Oracle per-connection settings
+
+These keys are applied by [`grapinator/db_listener.py`](../grapinator/db_listener.py) via a
+SQLAlchemy `connect` event handler that fires once per new DBAPI session.  They are only
+consulted when `DB_TYPE` contains `oracle`; they are silently ignored for every other dialect.
+See [`docs/gunicorn.md`](gunicorn.md#timeout-interlocks) for the timeout interlock between
+`ORACLE_CALL_TIMEOUT` and `GUNICORN_TIMEOUT`.
+
+| Setting | Required | Type | Default | Description |
+|---------|----------|------|---------|-------------|
+| `ORACLE_CALL_TIMEOUT` | Yes (when Oracle) | integer (ms) | `15000` | Maximum wall-clock time `python-oracledb` allows any single round-trip (parse / execute / fetch) to take before raising `DPI-1067`.  Load-bearing — a failure to apply this value closes the connection so SQLAlchemy evicts it instead of returning a broken session.  Validated at boot: must satisfy `0 < ORACLE_CALL_TIMEOUT < GUNICORN_TIMEOUT * 1000`.  Applied to `connection.call_timeout`. |
+| `ORACLE_STMTCACHESIZE` | No | integer | *(driver default: 20)* | Statement cache size per connection.  Increase for workloads with many distinct queries.  Applied to `connection.stmtcachesize`. |
+| `ORACLE_AUTOCOMMIT` | No | boolean | *(driver default: False)* | Connection-level autocommit.  Grapinator is read-only so the default `False` keeps SQLAlchemy transaction semantics consistent; only override for very specific operational reasons.  Applied to `connection.autocommit`. |
+| `ORACLE_MODULE` | No | string | `grapinator` | Value surfaced in `V$SESSION.MODULE` for DBA observability.  Applied to `connection.module`. |
+| `ORACLE_ACTION` | No | string | *(unset)* | Finer-grained tag visible in `V$SESSION.ACTION`.  Useful for tagging deploys (`api`, `etl`, `report-runner`, …).  Applied to `connection.action`. |
+| `ORACLE_CLIENT_IDENTIFIER` | No | string | *(unset)* | Per-deployment client identifier surfaced in `V$SESSION.CLIENT_IDENTIFIER`.  Applied to `connection.client_identifier`. |
+| `ORACLE_CURRENT_SCHEMA` | No | string | *(unset)* | When set, the listener applies `ALTER SESSION SET CURRENT_SCHEMA=…` on each new connection.  Useful when the connecting user is not the schema owner. |
+
+> **Best-effort attributes.**  All `ORACLE_*` keys other than `ORACLE_CALL_TIMEOUT` are
+> applied best-effort: if `python-oracledb` raises while setting the attribute, the failure
+> is logged at `WARNING` and the connection is still returned to the pool.  An
+> `ORACLE_CALL_TIMEOUT` failure is fatal and closes the connection so SQLAlchemy retries.
+
 The full SQLAlchemy database URI is assembled at runtime:
 
 - **SQLite:** `<DB_TYPE>://<DB_CONNECT>`
@@ -350,6 +373,14 @@ DB_POOL_TIMEOUT       = 15
 # Recycle connections every 30 min — set below your Oracle IDLE_TIME profile limit.
 DB_POOL_RECYCLE       = 1800
 DB_POOL_PRE_PING      = True
+# --- Oracle per-connection knobs (db_listener) ----------------------------
+# ORACLE_CALL_TIMEOUT must be strictly less than GUNICORN_TIMEOUT*1000.
+ORACLE_CALL_TIMEOUT      = 15000
+ORACLE_STMTCACHESIZE     = 40
+ORACLE_MODULE            = grapinator
+ORACLE_ACTION            = api
+ORACLE_CLIENT_IDENTIFIER = grapinator-prod
+# ORACLE_CURRENT_SCHEMA  = APP_OWNER
 ```
 
 > **Oracle idle-session timeout note:** Two mechanisms can silently close idle pool

@@ -113,7 +113,19 @@ All notable changes to Grapinator
 
 ### Fixed
 
-- N/A.
+- **`docs/grapinator_ini.md` missing Oracle per-connection settings table** —
+  the seven new `ORACLE_*` keys (`ORACLE_CALL_TIMEOUT`,
+  `ORACLE_STMTCACHESIZE`, `ORACLE_AUTOCOMMIT`, `ORACLE_MODULE`,
+  `ORACLE_ACTION`, `ORACLE_CLIENT_IDENTIFIER`, `ORACLE_CURRENT_SCHEMA`) are
+  now documented in the `[SQLALCHEMY]` reference with defaults, the
+  timeout-interlock note, and the best-effort vs. fatal behaviour split.
+  The Oracle ini example was updated to include the recommended values.
+- **`grapinator_rbac.ini` / `grapinator_rbac_keycloakdev.ini` stale
+  `WSGI_THREAD_POOL` guidance** — the `DB_POOL_SIZE` sizing comment was
+  rewritten to reference `GUNICORN_WORKERS * GUNICORN_THREADS`.  The same
+  `[GUNICORN]` commented-example block and `ORACLE_*` commented-example
+  block that already shipped in `grapinator.ini` are now mirrored in both
+  RBAC templates so all three bundled ini files document the same surface.
 
 ---
 
