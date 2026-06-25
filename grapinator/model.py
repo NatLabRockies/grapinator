@@ -45,6 +45,12 @@ if settings.DB_POOL_RECYCLE is not None:
     pool_kwargs['pool_recycle'] = settings.DB_POOL_RECYCLE
 
 engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, **pool_kwargs)
+# Attach the dialect-aware ``connect`` event listener so per-vendor knobs
+# (e.g. ORACLE_CALL_TIMEOUT) are applied to every freshly-pooled DBAPI
+# connection.  Unknown dialects fall back to a no-op so this is safe for
+# sqlite-based unit tests.
+from grapinator.db_listener import register as _register_db_listener
+_register_db_listener(engine, settings)
 logger.info(
     'Database engine created: %s  pool_size=%s max_overflow=%s recycle=%s pre_ping=%s',
     settings.DB_TYPE,

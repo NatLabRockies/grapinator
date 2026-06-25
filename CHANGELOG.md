@@ -2,6 +2,133 @@
 
 All notable changes to Grapinator
 
+## [2.1.12] - unreleased
+
+### Changed
+
+- **`GRAPINATOR_CONFIG` now drives all resource file loading** (issue #35) — Grapinator
+  derives a *resources directory* from the directory that contains the ini file pointed to
+  by `GRAPINATOR_CONFIG`.  `logging.conf` is now loaded from that same directory instead of
+  being hardcoded to the bundled `grapinator/resources/` path.  A relative `GQL_SCHEMA` value
+  in the ini file is also resolved against the resources directory.  The default behaviour
+  (no env var set) is unchanged: the bundled `grapinator/resources/grapinator.ini` is used and
+  all files are loaded from `grapinator/resources/`.
+
+- **Production WSGI server: CherryPy → Gunicorn** (issue #34, design in `docs/new-design.md`)
+  — CherryPy 18.10.0 has been removed from `install_requires` and the runtime
+  stack.  Grapinator now ships with a Gunicorn entrypoint
+  (`grapinator/svc_gunicorn.py`) and a bundled config
+  (`grapinator/resources/gunicorn.conf.py`) that reads from the existing
+  encrypted `grapinator.ini`.  The Docker launcher script
+  (`docker/resources/grapinator_service.sh`) was updated to
+  `exec gunicorn --config ... grapinator.svc_gunicorn:application`.  All
+  middleware (`SecurityHeadersMiddleware`, `CorsMiddleware`, the optional
+  `BearerAuthMiddleware`, and the WSGI access log) was extracted to
+  `grapinator/middleware.py` and reassembled by `build_wsgi_stack()` so the
+  middleware order is identical to the prior CherryPy stack.
+
+- **TLS termination moves to Nginx.**  `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY`
+  are now deprecated and ignored with a `WARNING` at boot.  See the new
+  `docs/nginx.md` for the recommended reverse-proxy config (TLS, per-IP rate
+  limit, `client_max_body_size`).
+
+- **Dialect-aware SQLAlchemy `connect` listener** (`grapinator/db_listener.py`)
+  — A new module registers a single `connect` event handler that dispatches
+  per-vendor.  Only the Oracle helper is non-trivial in 2.1.12; it applies
+  `ORACLE_CALL_TIMEOUT` (load-bearing — failures close the connection so SA
+  evicts it) and best-effort `stmtcachesize`/`autocommit`/`module`/`action`/
+  `client_identifier`/`current_schema`.  PostgreSQL/MySQL/MSSQL stubs are in
+  place for future tuning; SQLite uses the no-op helper so the existing
+  test database is unaffected.
+
+### Added
+
+- **`[GUNICORN]` INI section** with ten new keys: `GUNICORN_WORKERS`
+  (default `2*CPU+1`), `GUNICORN_THREADS` (8), `GUNICORN_WORKER_CLASS`
+  (`gthread`), `GUNICORN_WORKER_CONNECTIONS` (1000), `GUNICORN_TIMEOUT`
+  (30 s), `GUNICORN_KEEPALIVE` (75 s), `GUNICORN_MAX_REQUESTS` (1000),
+  `GUNICORN_MAX_REQUESTS_JITTER` (100), `GUNICORN_LIMIT_REQUEST_LINE`
+  (8190), `GUNICORN_LIMIT_REQUEST_FIELD_SIZE` (8190).  Every key is
+  optional.  `worker_class` is restricted to `gthread`/`sync`; any other
+  value aborts boot via `sys.exit(1)` with a clear stderr message.
+
+- **`ORACLE_*` per-connection knobs in `[SQLALCHEMY]`**:
+  `ORACLE_CALL_TIMEOUT` (default 15000 ms; mandatory under Oracle),
+  `ORACLE_STMTCACHESIZE`, `ORACLE_AUTOCOMMIT`,
+  `ORACLE_MODULE` (default `grapinator`), `ORACLE_ACTION`,
+  `ORACLE_CLIENT_IDENTIFIER`, `ORACLE_CURRENT_SCHEMA`.  Validation at INI
+  load asserts `0 < ORACLE_CALL_TIMEOUT < GUNICORN_TIMEOUT * 1000` when
+  `DB_TYPE` contains `oracle`, preventing a configuration where the
+  Gunicorn timeout fires before the Oracle driver aborts the call.
+
+- **`docs/gunicorn.md`** — sizing rules, tunable reference, post_fork
+  engine-disposal explanation, smoke-check workflow.
+
+- **`docs/nginx.md`** — recommended `nginx.conf` snippet (TLS, keepalive
+  pool, `client_max_body_size`, `limit_req_zone`), end-to-end topology
+  diagram, timeout-interlock reference.
+
+- **`grapinator/middleware.py`** — `SecurityHeadersMiddleware`,
+  `CorsMiddleware`, and `build_wsgi_stack(flask_app)` helper extracted
+  from the deleted `svc_cherrypy.py` so the new Gunicorn entrypoint can
+  reuse them without circular imports.
+
+- **47 new unit tests** across:
+  - `tests/test_settings_class.py` — Gunicorn defaults, Oracle defaults,
+    Oracle-explicit, Oracle/Gunicorn cross-validation, removed-key
+    hard-fail, deprecated-key WARNING-only behaviour.
+  - `tests/test_db_listener.py` — dispatcher coverage, Oracle happy paths,
+    fatal `call_timeout` failure closes the connection, best-effort
+    attribute failure logs WARNING and continues, sqlite integration
+    smoke test against a real engine.
+  - `tests/test_svc_gunicorn.py` — `application` is a callable WSGI app
+    at import time; `main()` shells to `gunicorn --check-config`.
+  - `tests/test_gunicorn_config.py` — every Gunicorn attribute the conf
+    file publishes, worker-class allow-list enforcement, conditional
+    `backlog`/`graceful_timeout` exposure, `post_fork` engine disposal.
+  - `tests/test_no_cherrypy_imports.py` — regression test that walks the
+    package and asserts `import cherrypy` / `from cherrypy` are absent
+    and the `svc_cherrypy.py` module no longer exists.
+
+### Removed
+
+- **`grapinator/svc_cherrypy.py`** — replaced by `svc_gunicorn.py` plus
+  the extracted middleware module.
+- **`cherrypy>=18.10.0`** from `install_requires` (`setup.cfg`).
+- **`WSGI_THREAD_POOL`** INI key — replaced by `GUNICORN_THREADS`.  Boot
+  now logs an `ERROR` and raises `RuntimeError` (`sys.exit(1)` via
+  `grapinator/__init__.py`) when the key is present.
+- **`WSGI_ACCEPTED_QUEUE_SIZE`** INI key — Gunicorn has no equivalent.
+  Cap upstream queue depth at Nginx instead.  Same hard-fail behaviour
+  as `WSGI_THREAD_POOL`.
+
+### Deprecated
+
+- **`WSGI_SSL_CERT` / `WSGI_SSL_PRIVKEY`** — TLS is terminated at Nginx;
+  these keys are still accepted (so old INI files keep booting) but
+  ignored with a `WARNING` at boot.
+- **`WSGI_MAX_REQUEST_BODY_SIZE`** — request-body limits are enforced at
+  Nginx via `client_max_body_size`; same WARNING-only behaviour as the
+  SSL keys.
+
+### Fixed
+
+- **`docs/grapinator_ini.md` missing Oracle per-connection settings table** —
+  the seven new `ORACLE_*` keys (`ORACLE_CALL_TIMEOUT`,
+  `ORACLE_STMTCACHESIZE`, `ORACLE_AUTOCOMMIT`, `ORACLE_MODULE`,
+  `ORACLE_ACTION`, `ORACLE_CLIENT_IDENTIFIER`, `ORACLE_CURRENT_SCHEMA`) are
+  now documented in the `[SQLALCHEMY]` reference with defaults, the
+  timeout-interlock note, and the best-effort vs. fatal behaviour split.
+  The Oracle ini example was updated to include the recommended values.
+- **`grapinator_rbac.ini` / `grapinator_rbac_keycloakdev.ini` stale
+  `WSGI_THREAD_POOL` guidance** — the `DB_POOL_SIZE` sizing comment was
+  rewritten to reference `GUNICORN_WORKERS * GUNICORN_THREADS`.  The same
+  `[GUNICORN]` commented-example block and `ORACLE_*` commented-example
+  block that already shipped in `grapinator.ini` are now mirrored in both
+  RBAC templates so all three bundled ini files document the same surface.
+
+---
+
 ## [2.1.10] - 2026-06-12
 
 ### Changed

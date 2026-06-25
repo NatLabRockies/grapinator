@@ -8,16 +8,26 @@ transparently decrypts any values that were encrypted with CryptoConfig (see [En
 
 ## Selecting the ini file at runtime
 
-By default Grapinator loads `grapinator/resources/grapinator.ini`.  Set the `GRAPINATOR_CONFIG`
-environment variable to override this path at startup without changing any code.  The path is
-resolved relative to the **`grapinator/` package directory** (same convention as `GQL_SCHEMA`).
+By default Grapinator loads `grapinator/resources/grapinator.ini` bundled with the installed
+package.  Set the `GRAPINATOR_CONFIG` environment variable to the **absolute path of any ini
+file** to override this at startup without changing any code.
+
+Grapinator derives the *resources directory* from the directory that contains the ini file and
+loads all other runtime files from that same directory:
+
+| File | How the path is determined |
+|---|---|
+| `grapinator.ini` | Value of `GRAPINATOR_CONFIG` (or the bundled default) |
+| `logging.conf` | Same directory as the ini file |
+| Schema file (`GQL_SCHEMA`) | Filename resolved against the ini file's directory; absolute paths used as-is |
 
 ```bash
-# Use the default ini file
-python grapinator/svc_cherrypy.py
+# Use the default bundled ini file
+gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 
 # Use an alternate ini file (e.g. for RBAC testing)
-GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini python grapinator/svc_cherrypy.py
+GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini \
+    gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 ```
 
 This follows the same pattern as `GQLAPI_CRYPT_KEY` and makes it easy to run multiple
@@ -105,57 +115,86 @@ GraphQL schema configuration.
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| `GQL_SCHEMA` | path | Path to the schema dictionary file (`.dct`), **relative to the `grapinator/` package directory**.  See [schema_docs.md](schema_docs.md) for the file format. |
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
 
 **Example:**
 ```ini
 [GRAPHENE]
-GQL_SCHEMA = /resources/schema.dct
+GQL_SCHEMA = schema.dct
 ```
 
 ---
 
 ## [WSGI]
 
-Network and TLS settings for the CherryPy WSGI server.
+Network bind settings consumed by Gunicorn (replaces CherryPy in 2.1.12) via
+`grapinator/resources/gunicorn.conf.py`.  TLS is no longer handled here --
+terminate it at Nginx in front of Grapinator (see [`docs/nginx.md`](nginx.md)).
 
 | Setting | Required | Type | Default | Description |
 |---------|----------|------|---------|-------------|
-| `WSGI_SOCKET_HOST` | Yes | string | — | Hostname or IP address the server binds to.  Use `127.0.0.1` to restrict to localhost or `0.0.0.0` to listen on all interfaces. |
-| `WSGI_SOCKET_PORT` | Yes | integer | — | TCP port the server listens on. |
-| `WSGI_SSL_CERT` | No | path | — | Absolute path to the PEM-encoded TLS certificate file.  **Both** `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` must be present to enable HTTPS. |
-| `WSGI_SSL_PRIVKEY` | No | path | — | Absolute path to the PEM-encoded private key file that corresponds to `WSGI_SSL_CERT`. |
-| `WSGI_THREAD_POOL` | No | integer | `10` | Number of CherryPy worker threads (matches CherryPy's own built-in default).  For production Oracle deployments set this equal to `DB_POOL_SIZE` so every thread can hold a database connection simultaneously without queuing. |
-| `WSGI_SOCKET_QUEUE_SIZE` | No | integer | `5` | OS-level TCP accept backlog.  Raise to `20` or higher on servers that receive brief traffic spikes to prevent connection refusals before a worker thread is free.  *(CherryPy default: 5)* |
-| `WSGI_MAX_REQUEST_BODY_SIZE` | No | integer | `0` | Maximum allowed request body size in bytes.  `0` means unlimited.  Set to `1048576` (1 MB) in production to prevent oversized GraphQL query payloads from exhausting memory.  *(CherryPy default: 0)* |
-| `WSGI_SHUTDOWN_TIMEOUT` | No | integer | `5` | Seconds CherryPy waits for in-flight requests to complete before forcibly shutting down.  Raise to `10`–`15` when Oracle queries may take several seconds to return results.  *(CherryPy default: 5)* |
-| `WSGI_ACCEPTED_QUEUE_SIZE` | No | integer | `-1` | Limit on CherryPy's internal accept queue (requests waiting for a worker thread).  `-1` means unlimited.  Setting this to `100`–`200` puts a cap on memory growth during sustained overload.  *(CherryPy default: -1)* |
+| `WSGI_SOCKET_HOST` | Yes | string | — | Hostname or IP that Gunicorn binds to.  Use `127.0.0.1` to restrict to localhost, `0.0.0.0` to listen on every interface inside the container. |
+| `WSGI_SOCKET_PORT` | Yes | integer | — | TCP port Gunicorn listens on. |
+| `WSGI_SOCKET_QUEUE_SIZE` | No | integer | `2048` | Repurposed as Gunicorn `backlog` -- the OS-level TCP accept queue.  Raise to absorb brief connection bursts before workers free up. |
+| `WSGI_SHUTDOWN_TIMEOUT` | No | integer | `30` | Repurposed as Gunicorn `graceful_timeout` -- seconds Gunicorn waits for in-flight requests to complete before sending SIGKILL during shutdown. |
 
-When `WSGI_SSL_CERT` and `WSGI_SSL_PRIVKEY` are omitted, the service runs over plain HTTP.
+### Deprecated keys (logged at WARNING, ignored)
 
-**Example (HTTPS, SQLite/dev):**
+These keys are accepted so existing deployments still boot, but the values
+have no effect.  Remove them at your next config edit.
+
+| Setting | Notes |
+|---------|-------|
+| `WSGI_SSL_CERT` | TLS is terminated by Nginx -- configure your cert there. |
+| `WSGI_SSL_PRIVKEY` | Same as above. |
+| `WSGI_MAX_REQUEST_BODY_SIZE` | Enforce body limits at Nginx with `client_max_body_size`. |
+
+### Removed keys (boot fails if present)
+
+| Setting | Replacement |
+|---------|-------------|
+| `WSGI_THREAD_POOL` | `GUNICORN_THREADS` in the `[GUNICORN]` section. |
+| `WSGI_ACCEPTED_QUEUE_SIZE` | No Gunicorn equivalent.  Cap upstream queue depth at Nginx instead. |
+
+**Example (Docker + Nginx topology):**
 ```ini
 [WSGI]
-WSGI_SOCKET_HOST = 127.0.0.1
+WSGI_SOCKET_HOST = 0.0.0.0
 WSGI_SOCKET_PORT = 8443
-WSGI_SSL_CERT    = /etc/grapinator/server.crt
-WSGI_SSL_PRIVKEY = /etc/grapinator/server.key
-WSGI_THREAD_POOL = 10
+# WSGI_SOCKET_QUEUE_SIZE  = 2048   # Gunicorn backlog
+# WSGI_SHUTDOWN_TIMEOUT   = 30     # Gunicorn graceful_timeout
 ```
 
-**Example (enterprise Oracle production):**
+---
+
+## [GUNICORN]
+
+Gunicorn-specific server tuning, consumed by `grapinator/resources/gunicorn.conf.py`.
+Every key is optional and falls back to the class-level default shown below.
+See [`docs/gunicorn.md`](gunicorn.md) for the full sizing rationale.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `GUNICORN_WORKERS` | integer | `2 * CPU + 1` | Process count.  Match to (or just exceed) the physical core count of the worker host. |
+| `GUNICORN_THREADS` | integer | `8` | Threads per `gthread` worker.  Total request concurrency = `WORKERS * THREADS`. |
+| `GUNICORN_WORKER_CLASS` | string | `gthread` | Only `gthread` and `sync` are validated for 2.1.12; any other value aborts boot. |
+| `GUNICORN_WORKER_CONNECTIONS` | integer | `1000` | Async worker connection cap (no effect for `gthread`/`sync`). |
+| `GUNICORN_TIMEOUT` | integer | `30` | Seconds Gunicorn waits for a worker to respond before killing it.  Must exceed the worst-case query time **and** `ORACLE_CALL_TIMEOUT/1000`. |
+| `GUNICORN_KEEPALIVE` | integer | `75` | Seconds an idle keepalive connection is held open.  Match to Nginx `keepalive_timeout`. |
+| `GUNICORN_MAX_REQUESTS` | integer | `1000` | Requests served per worker before recycling (limits memory leak growth). |
+| `GUNICORN_MAX_REQUESTS_JITTER` | integer | `100` | Random offset applied to `MAX_REQUESTS` so workers do not recycle in lockstep. |
+| `GUNICORN_LIMIT_REQUEST_LINE` | integer | `8190` | Maximum request-line bytes accepted. |
+| `GUNICORN_LIMIT_REQUEST_FIELD_SIZE` | integer | `8190` | Maximum request-header bytes accepted. |
+
+**Example (8-core production host):**
 ```ini
-[WSGI]
-WSGI_SOCKET_HOST          = 0.0.0.0
-WSGI_SOCKET_PORT          = 8443
-WSGI_SSL_CERT             = /etc/grapinator/server.crt
-WSGI_SSL_PRIVKEY          = /etc/grapinator/server.key
-# Match WSGI_THREAD_POOL to DB_POOL_SIZE — see [SQLALCHEMY] below.
-WSGI_THREAD_POOL          = 20
-WSGI_SOCKET_QUEUE_SIZE    = 20
-WSGI_MAX_REQUEST_BODY_SIZE = 1048576
-WSGI_SHUTDOWN_TIMEOUT     = 10
-WSGI_ACCEPTED_QUEUE_SIZE  = 100
+[GUNICORN]
+GUNICORN_WORKERS                = 9      # 2*4 + 1; pin lower for memory-bound hosts
+GUNICORN_THREADS                = 8
+GUNICORN_TIMEOUT                = 30
+GUNICORN_KEEPALIVE              = 75
+GUNICORN_MAX_REQUESTS           = 1000
+GUNICORN_MAX_REQUESTS_JITTER    = 100
 ```
 
 ---
@@ -264,11 +303,34 @@ not require authentication (e.g. SQLite).  `DB_PASSWORD` supports CryptoConfig e
 | `SQLALCHEMY_TRACK_MODIFICATIONS` | Yes | boolean | When `True`, Flask-SQLAlchemy emits a signal on every model change.  Set to `False` to suppress the deprecation warning and reduce memory overhead. |
 | `ORCL_NLS_LANG` | No | string | *(Oracle only)* Value written to the `NLS_LANG` environment variable before the connection is established (e.g. `AMERICAN_AMERICA.AL32UTF8`). |
 | `ORCL_NLS_DATE_FORMAT` | No | string | *(Oracle only)* Value written to the `NLS_DATE_FORMAT` environment variable (e.g. `YYYY-MM-DD HH24:MI:SS`). |
-| `DB_POOL_SIZE` | No | integer | Number of connections kept open in the SQLAlchemy `QueuePool`.  **Rule of thumb: set equal to `WSGI_THREAD_POOL`** so every CherryPy worker can hold a connection simultaneously without queuing.  *(SQLAlchemy default: 5)* |
+| `DB_POOL_SIZE` | No | integer | Number of connections kept open in the SQLAlchemy `QueuePool`.  **Rule of thumb: set equal to `GUNICORN_WORKERS * GUNICORN_THREADS`** so every Gunicorn thread can hold a connection simultaneously without queuing.  *(SQLAlchemy default: 5)* |
 | `DB_POOL_MAX_OVERFLOW` | No | integer | Extra connections allowed above `DB_POOL_SIZE` during traffic bursts.  These connections are closed immediately after use rather than returned to the pool.  Total maximum Oracle sessions = `DB_POOL_SIZE + DB_POOL_MAX_OVERFLOW`.  *(SQLAlchemy default: 10)* |
 | `DB_POOL_TIMEOUT` | No | float | Seconds to block waiting for a free connection before raising a `TimeoutError`.  Set this lower than your upstream client timeout so the caller receives a clean error instead of a silent hang.  *(SQLAlchemy default: 30)* |
 | `DB_POOL_RECYCLE` | No | integer | Seconds after which a pooled connection is proactively replaced.  **Critical for Oracle**: `SQLNET.EXPIRE_TIME` (server-level) and the user-profile `IDLE_TIME` setting will silently close idle connections, producing `ORA-03135` or `ORA-02396` errors.  Set this below the shortest Oracle idle timeout on your server (commonly 1 800 s / 30 min).  Use `-1` to disable recycling (not recommended for Oracle).  *(SQLAlchemy default: -1)* |
 | `DB_POOL_PRE_PING` | No | boolean | When `True` (the default), SQLAlchemy issues a lightweight round-trip before each connection checkout to detect dead connections.  This adds roughly 1 ms per request but prevents `ORA-03135` / `ORA-02396` errors from propagating to API clients.  Set to `False` only on low-latency links where the extra round-trip is undesirable.  *(SQLAlchemy default: False; Grapinator default: True)* |
+
+### Oracle per-connection settings
+
+These keys are applied by [`grapinator/db_listener.py`](../grapinator/db_listener.py) via a
+SQLAlchemy `connect` event handler that fires once per new DBAPI session.  They are only
+consulted when `DB_TYPE` contains `oracle`; they are silently ignored for every other dialect.
+See [`docs/gunicorn.md`](gunicorn.md#timeout-interlocks) for the timeout interlock between
+`ORACLE_CALL_TIMEOUT` and `GUNICORN_TIMEOUT`.
+
+| Setting | Required | Type | Default | Description |
+|---------|----------|------|---------|-------------|
+| `ORACLE_CALL_TIMEOUT` | Yes (when Oracle) | integer (ms) | `15000` | Maximum wall-clock time `python-oracledb` allows any single round-trip (parse / execute / fetch) to take before raising `DPI-1067`.  Load-bearing — a failure to apply this value closes the connection so SQLAlchemy evicts it instead of returning a broken session.  Validated at boot: must satisfy `0 < ORACLE_CALL_TIMEOUT < GUNICORN_TIMEOUT * 1000`.  Applied to `connection.call_timeout`. |
+| `ORACLE_STMTCACHESIZE` | No | integer | *(driver default: 20)* | Statement cache size per connection.  Increase for workloads with many distinct queries.  Applied to `connection.stmtcachesize`. |
+| `ORACLE_AUTOCOMMIT` | No | boolean | *(driver default: False)* | Connection-level autocommit.  Grapinator is read-only so the default `False` keeps SQLAlchemy transaction semantics consistent; only override for very specific operational reasons.  Applied to `connection.autocommit`. |
+| `ORACLE_MODULE` | No | string | `grapinator` | Value surfaced in `V$SESSION.MODULE` for DBA observability.  Applied to `connection.module`. |
+| `ORACLE_ACTION` | No | string | *(unset)* | Finer-grained tag visible in `V$SESSION.ACTION`.  Useful for tagging deploys (`api`, `etl`, `report-runner`, …).  Applied to `connection.action`. |
+| `ORACLE_CLIENT_IDENTIFIER` | No | string | *(unset)* | Per-deployment client identifier surfaced in `V$SESSION.CLIENT_IDENTIFIER`.  Applied to `connection.client_identifier`. |
+| `ORACLE_CURRENT_SCHEMA` | No | string | *(unset)* | When set, the listener applies `ALTER SESSION SET CURRENT_SCHEMA=…` on each new connection.  Useful when the connecting user is not the schema owner. |
+
+> **Best-effort attributes.**  All `ORACLE_*` keys other than `ORACLE_CALL_TIMEOUT` are
+> applied best-effort: if `python-oracledb` raises while setting the attribute, the failure
+> is logged at `WARNING` and the connection is still returned to the pool.  An
+> `ORACLE_CALL_TIMEOUT` failure is fatal and closes the connection so SQLAlchemy retries.
 
 The full SQLAlchemy database URI is assembled at runtime:
 
@@ -304,13 +366,21 @@ DB_CONNECT                     = db.example.com:1521/ORCL
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 ORCL_NLS_LANG                  = AMERICAN_AMERICA.AL32UTF8
 ORCL_NLS_DATE_FORMAT           = YYYY-MM-DD HH24:MI:SS
-# Match DB_POOL_SIZE to WSGI_THREAD_POOL so every thread can hold a connection.
+# Match DB_POOL_SIZE to (GUNICORN_WORKERS * GUNICORN_THREADS) so every thread can hold a connection.
 DB_POOL_SIZE          = 20
 DB_POOL_MAX_OVERFLOW  = 10
 DB_POOL_TIMEOUT       = 15
 # Recycle connections every 30 min — set below your Oracle IDLE_TIME profile limit.
 DB_POOL_RECYCLE       = 1800
 DB_POOL_PRE_PING      = True
+# --- Oracle per-connection knobs (db_listener) ----------------------------
+# ORACLE_CALL_TIMEOUT must be strictly less than GUNICORN_TIMEOUT*1000.
+ORACLE_CALL_TIMEOUT      = 15000
+ORACLE_STMTCACHESIZE     = 40
+ORACLE_MODULE            = grapinator
+ORACLE_ACTION            = api
+ORACLE_CLIENT_IDENTIFIER = grapinator-prod
+# ORACLE_CURRENT_SCHEMA  = APP_OWNER
 ```
 
 > **Oracle idle-session timeout note:** Two mechanisms can silently close idle pool
@@ -414,13 +484,13 @@ AUTH_ROLES_CLAIM = https://grapinator/roles
 ### Local development with `AUTH_DEV_SECRET`
 
 > **Important:** JWT authentication is enforced by `BearerAuthMiddleware`, which is only
-> inserted into the WSGI stack when the service runs under **`svc_cherrypy.py`**.  Flask's
+> inserted into the WSGI stack when the service runs under **`svc_gunicorn.py`**.  Flask's
 > built-in development server (`grapinator/app.py` / `flask run`) does **not** invoke the
 > middleware, so `Authorization` headers are silently ignored and all fields are returned
-> regardless of role.  Always test RBAC against the CherryPy server:
+> regardless of role.  Always test RBAC against the Gunicorn server:
 >
 > ```bash
-> python grapinator/svc_cherrypy.py
+> gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 > ```
 
 During development you can authenticate without a running IdP by using HS256 tokens signed with
@@ -460,12 +530,12 @@ a shared secret.  **This is not suitable for production.**
    # RBAC test — queries birth_date which is restricted to the 'hr' role in schema_rbac.dct.
    #
    # IMPORTANT: JWT auth (BearerAuthMiddleware) is only active when the service is
-   # running under the CherryPy WSGI server (svc_cherrypy.py).  Flask's built-in
+   # running under the Gunicorn WSGI server (svc_gunicorn.py).  Flask's built-in
    # development server (app.py / `flask run`) does NOT insert the auth middleware
    # and will return data for ALL fields regardless of role.
    #
    # Start the server with:
-   #   python grapinator/svc_cherrypy.py
+   #   gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
    #
    # Expected result with role 'hr':  birth_date has a real value.
    # Expected result with no token:   birth_date is null (mixed mode).

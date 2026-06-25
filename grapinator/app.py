@@ -15,7 +15,7 @@ This module:
   4. Exposes ``main()`` for running the built-in Flask development server
      (not intended for production use).
 
-Production deployments should use :mod:`grapinator.svc_cherrypy` instead of
+Production deployments should use :mod:`grapinator.svc_gunicorn` instead of
 calling ``main()`` directly.
 """
 
@@ -255,7 +255,7 @@ def main():
 
     .. warning::
         The Flask development server is **not** suitable for production use.
-        For production or Docker deployments use :mod:`grapinator.svc_cherrypy`.
+        For production or Docker deployments use :mod:`grapinator.svc_gunicorn`.
 
     .. note::
         Flask's built-in reloader is incompatible with the VS Code debugger.

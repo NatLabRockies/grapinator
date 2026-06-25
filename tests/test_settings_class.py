@@ -21,6 +21,82 @@ from grapinator.settings import Settings, SchemaSettings
 
 
 # ---------------------------------------------------------------------------
+# Shared test helper — builds a Settings instance off a mocked
+# CryptoConfigParser populated with the minimum keys plus caller-supplied
+# overrides.  Used by all classes in this module that don't need to touch the
+# real INI file.
+# ---------------------------------------------------------------------------
+
+def _make_mock_settings(extra_options):
+    """Return a Settings instance whose CryptoConfigParser is mocked to return
+    a minimal valid config plus the given extra options.
+
+    *extra_options* is a dict keyed on (section, key) tuples.  Pass an empty
+    dict to get a vanilla SQLite settings object.
+    """
+    base_options = {
+        ('WSGI', 'WSGI_SOCKET_HOST'): '127.0.0.1',
+        ('WSGI', 'WSGI_SOCKET_PORT'): '8443',
+        ('CORS', 'CORS_ENABLE'): 'False',
+        ('CORS', 'CORS_EXPOSE_ORIGINS'): '*',
+        ('CORS', 'CORS_ALLOW_METHODS'): 'GET, POST',
+        ('CORS', 'CORS_HEADER_MAX_AGE'): '1800',
+        ('CORS', 'CORS_ALLOW_HEADERS'): 'Content-Type',
+        ('CORS', 'CORS_EXPOSE_HEADERS'): 'Location',
+        ('CORS', 'CORS_SEND_WILDCARD'): 'True',
+        ('CORS', 'CORS_SUPPORTS_CREDENTIALS'): 'False',
+        ('HTTP_HEADERS', 'HTTP_HEADERS_XFRAME'): 'sameorigin',
+        ('HTTP_HEADERS', 'HTTP_HEADERS_XSS_PROTECTION'): '1; mode=block',
+        ('HTTP_HEADERS', 'HTTP_HEADER_CACHE_CONTROL'): 'no-cache',
+        ('HTTP_HEADERS', 'HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS'): 'nosniff',
+        ('HTTP_HEADERS', 'HTTP_HEADERS_REFERRER_POLICY'): 'strict-origin-when-cross-origin',
+        ('HTTP_HEADERS', 'HTTP_HEADERS_CONTENT_SECURITY_POLICY'): "default-src 'self'",
+        ('FLASK', 'FLASK_SERVER_NAME'): 'localhost:8443',
+        ('FLASK', 'FLASK_API_ENDPOINT'): '/gql',
+        ('FLASK', 'FLASK_DEBUG'): 'False',
+        ('SQLALCHEMY', 'DB_TYPE'): 'sqlite+pysqlite',
+        ('SQLALCHEMY', 'DB_CONNECT'): '/tmp/test.db',
+        ('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS'): 'False',
+        ('GRAPHENE', 'GQL_SCHEMA'): 'schema.dct',
+    }
+    all_options = {**base_options, **extra_options}
+
+    mock_parser = MagicMock()
+    mock_parser.read = MagicMock()
+
+    sections = set(s for s, _ in all_options)
+    mock_parser.has_section = lambda s: s in sections
+
+    def has_option(section, key):
+        return (section, key) in all_options
+
+    def get(section, key):
+        return all_options[(section, key)]
+
+    def getint(section, key):
+        return int(all_options[(section, key)])
+
+    def getfloat(section, key):
+        return float(all_options[(section, key)])
+
+    def getboolean(section, key):
+        v = all_options[(section, key)].strip().lower()
+        return v in ('1', 'yes', 'true', 'on')
+
+    mock_parser.has_option = has_option
+    mock_parser.get = get
+    mock_parser.getint = getint
+    mock_parser.getfloat = getfloat
+    mock_parser.getboolean = getboolean
+
+    with patch('crypto_config.cryptoconfigparser.CryptoConfigParser',
+               return_value=mock_parser):
+        with patch.dict('os.environ', {'GQLAPI_CRYPT_KEY': 'testkey'}):
+            s = Settings(config_file='/resources/grapinator.ini')
+    return s
+
+
+# ---------------------------------------------------------------------------
 # A minimal schema dict used by SchemaSettings tests without touching the
 # real schema.dct file on disk.
 # ---------------------------------------------------------------------------
@@ -280,69 +356,7 @@ class TestSettingsPoolExplicit(unittest.TestCase):
     def _make_settings_with_pool(self, extra_options):
         """Return a Settings instance whose CryptoConfigParser is mocked to
         return a minimal valid config plus the given extra options."""
-        import configparser
-
-        base_options = {
-            ('WSGI', 'WSGI_SOCKET_HOST'): '127.0.0.1',
-            ('WSGI', 'WSGI_SOCKET_PORT'): '8443',
-            ('CORS', 'CORS_ENABLE'): 'False',
-            ('CORS', 'CORS_EXPOSE_ORIGINS'): '*',
-            ('CORS', 'CORS_ALLOW_METHODS'): 'GET, POST',
-            ('CORS', 'CORS_HEADER_MAX_AGE'): '1800',
-            ('CORS', 'CORS_ALLOW_HEADERS'): 'Content-Type',
-            ('CORS', 'CORS_EXPOSE_HEADERS'): 'Location',
-            ('CORS', 'CORS_SEND_WILDCARD'): 'True',
-            ('CORS', 'CORS_SUPPORTS_CREDENTIALS'): 'False',
-            ('HTTP_HEADERS', 'HTTP_HEADERS_XFRAME'): 'sameorigin',
-            ('HTTP_HEADERS', 'HTTP_HEADERS_XSS_PROTECTION'): '1; mode=block',
-            ('HTTP_HEADERS', 'HTTP_HEADER_CACHE_CONTROL'): 'no-cache',
-            ('HTTP_HEADERS', 'HTTP_HEADERS_X_CONTENT_TYPE_OPTIONS'): 'nosniff',
-            ('HTTP_HEADERS', 'HTTP_HEADERS_REFERRER_POLICY'): 'strict-origin-when-cross-origin',
-            ('HTTP_HEADERS', 'HTTP_HEADERS_CONTENT_SECURITY_POLICY'): "default-src 'self'",
-            ('FLASK', 'FLASK_SERVER_NAME'): 'localhost:8443',
-            ('FLASK', 'FLASK_API_ENDPOINT'): '/gql',
-            ('FLASK', 'FLASK_DEBUG'): 'False',
-            ('SQLALCHEMY', 'DB_TYPE'): 'sqlite+pysqlite',
-            ('SQLALCHEMY', 'DB_CONNECT'): '/tmp/test.db',
-            ('SQLALCHEMY', 'SQLALCHEMY_TRACK_MODIFICATIONS'): 'False',
-            ('GRAPHENE', 'GQL_SCHEMA'): '/resources/schema.dct',
-        }
-        all_options = {**base_options, **extra_options}
-
-        mock_parser = MagicMock()
-        mock_parser.read = MagicMock()
-
-        sections = set(s for s, _ in all_options)
-        mock_parser.has_section = lambda s: s in sections
-
-        def has_option(section, key):
-            return (section, key) in all_options
-
-        def get(section, key):
-            return all_options[(section, key)]
-
-        def getint(section, key):
-            return int(all_options[(section, key)])
-
-        def getfloat(section, key):
-            return float(all_options[(section, key)])
-
-        def getboolean(section, key):
-            v = all_options[(section, key)].strip().lower()
-            return v in ('1', 'yes', 'true', 'on')
-
-        mock_parser.has_option = has_option
-        mock_parser.get = get
-        mock_parser.getint = getint
-        mock_parser.getfloat = getfloat
-        mock_parser.getboolean = getboolean
-
-        from grapinator.settings import Settings
-        with patch('crypto_config.cryptoconfigparser.CryptoConfigParser',
-                   return_value=mock_parser):
-            with patch.dict('os.environ', {'GQLAPI_CRYPT_KEY': 'testkey'}):
-                s = Settings(config_file='/resources/grapinator.ini')
-        return s
+        return _make_mock_settings(extra_options)
 
     def test_pool_size_loaded_as_int(self):
         s = self._make_settings_with_pool({('SQLALCHEMY', 'DB_POOL_SIZE'): '20'})
@@ -379,6 +393,221 @@ class TestSettingsPoolExplicit(unittest.TestCase):
     def test_pool_recycle_absent_stays_none(self):
         s = self._make_settings_with_pool({})
         self.assertIsNone(s.DB_POOL_RECYCLE)
+
+
+# ---------------------------------------------------------------------------
+# Settings — Gunicorn knobs (issue #34)
+# ---------------------------------------------------------------------------
+
+class TestSettingsGunicornDefaults(unittest.TestCase):
+    """Verify the [GUNICORN] section defaults when nothing is set in the INI."""
+
+    def test_workers_defaults_to_2_cpu_plus_1(self):
+        import os as _os
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_WORKERS, 2 * (_os.cpu_count() or 1) + 1)
+
+    def test_threads_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_THREADS, 8)
+
+    def test_worker_class_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_WORKER_CLASS, 'gthread')
+
+    def test_timeout_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_TIMEOUT, 30)
+
+    def test_keepalive_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_KEEPALIVE, 75)
+
+    def test_max_requests_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_MAX_REQUESTS, 1000)
+
+    def test_max_requests_jitter_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_MAX_REQUESTS_JITTER, 100)
+
+    def test_limit_request_line_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_LIMIT_REQUEST_LINE, 8190)
+
+    def test_limit_request_field_size_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GUNICORN_LIMIT_REQUEST_FIELD_SIZE, 8190)
+
+
+class TestSettingsGunicornExplicit(unittest.TestCase):
+    """Verify GUNICORN_* keys in the INI override the class defaults."""
+
+    def test_workers_loaded_as_int(self):
+        s = _make_mock_settings({('GUNICORN', 'GUNICORN_WORKERS'): '4'})
+        self.assertEqual(s.GUNICORN_WORKERS, 4)
+        self.assertIsInstance(s.GUNICORN_WORKERS, int)
+
+    def test_threads_loaded(self):
+        s = _make_mock_settings({('GUNICORN', 'GUNICORN_THREADS'): '16'})
+        self.assertEqual(s.GUNICORN_THREADS, 16)
+
+    def test_worker_class_loaded(self):
+        s = _make_mock_settings({('GUNICORN', 'GUNICORN_WORKER_CLASS'): 'sync'})
+        self.assertEqual(s.GUNICORN_WORKER_CLASS, 'sync')
+
+    def test_timeout_loaded(self):
+        s = _make_mock_settings({('GUNICORN', 'GUNICORN_TIMEOUT'): '60'})
+        self.assertEqual(s.GUNICORN_TIMEOUT, 60)
+
+    def test_keepalive_loaded(self):
+        s = _make_mock_settings({('GUNICORN', 'GUNICORN_KEEPALIVE'): '120'})
+        self.assertEqual(s.GUNICORN_KEEPALIVE, 120)
+
+
+# ---------------------------------------------------------------------------
+# Settings — Oracle per-connection knobs (issue #34)
+# ---------------------------------------------------------------------------
+
+class TestSettingsOracleDefaults(unittest.TestCase):
+    """Verify the ORACLE_* class-level defaults when nothing is set in the INI."""
+
+    def test_call_timeout_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.ORACLE_CALL_TIMEOUT, 15000)
+
+    def test_module_default(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.ORACLE_MODULE, 'grapinator')
+
+    def test_other_oracle_defaults_are_none(self):
+        s = _make_mock_settings({})
+        self.assertIsNone(s.ORACLE_STMTCACHESIZE)
+        self.assertIsNone(s.ORACLE_AUTOCOMMIT)
+        self.assertIsNone(s.ORACLE_ACTION)
+        self.assertIsNone(s.ORACLE_CLIENT_IDENTIFIER)
+        self.assertIsNone(s.ORACLE_CURRENT_SCHEMA)
+
+
+class TestSettingsOracleExplicit(unittest.TestCase):
+    """Verify ORACLE_* keys present in the INI are loaded with correct types."""
+
+    def test_call_timeout_loaded_as_int(self):
+        s = _make_mock_settings({('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '20000'})
+        self.assertEqual(s.ORACLE_CALL_TIMEOUT, 20000)
+        self.assertIsInstance(s.ORACLE_CALL_TIMEOUT, int)
+
+    def test_stmtcachesize_loaded_as_int(self):
+        s = _make_mock_settings({('SQLALCHEMY', 'ORACLE_STMTCACHESIZE'): '40'})
+        self.assertEqual(s.ORACLE_STMTCACHESIZE, 40)
+
+    def test_autocommit_loaded_as_bool(self):
+        s = _make_mock_settings({('SQLALCHEMY', 'ORACLE_AUTOCOMMIT'): 'True'})
+        self.assertTrue(s.ORACLE_AUTOCOMMIT)
+
+    def test_module_loaded_as_str(self):
+        s = _make_mock_settings({('SQLALCHEMY', 'ORACLE_MODULE'): 'custom-app'})
+        self.assertEqual(s.ORACLE_MODULE, 'custom-app')
+
+    def test_current_schema_loaded_as_str(self):
+        s = _make_mock_settings({('SQLALCHEMY', 'ORACLE_CURRENT_SCHEMA'): 'APP_OWNER'})
+        self.assertEqual(s.ORACLE_CURRENT_SCHEMA, 'APP_OWNER')
+
+
+# ---------------------------------------------------------------------------
+# Settings — Oracle / Gunicorn cross-validation (issue #34)
+# ---------------------------------------------------------------------------
+
+class TestSettingsOracleValidation(unittest.TestCase):
+    """ORACLE_CALL_TIMEOUT must be 0 < CALL_TIMEOUT(ms) < GUNICORN_TIMEOUT*1000
+    when DB_TYPE is Oracle.  Non-Oracle dialects skip the check."""
+
+    def test_call_timeout_zero_raises_for_oracle(self):
+        with self.assertRaises(RuntimeError):
+            _make_mock_settings({
+                ('SQLALCHEMY', 'DB_TYPE'): 'oracle+oracledb',
+                ('SQLALCHEMY', 'DB_USER'): 'app',
+                ('SQLALCHEMY', 'DB_PASSWORD'): 'pw',
+                ('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '0',
+            })
+
+    def test_call_timeout_negative_raises_for_oracle(self):
+        with self.assertRaises(RuntimeError):
+            _make_mock_settings({
+                ('SQLALCHEMY', 'DB_TYPE'): 'oracle+oracledb',
+                ('SQLALCHEMY', 'DB_USER'): 'app',
+                ('SQLALCHEMY', 'DB_PASSWORD'): 'pw',
+                ('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '-5',
+            })
+
+    def test_call_timeout_geq_gunicorn_timeout_raises(self):
+        # GUNICORN_TIMEOUT default 30s => 30000ms.  Setting CALL_TIMEOUT to
+        # exactly 30000 must fail (strict less-than).
+        with self.assertRaises(RuntimeError):
+            _make_mock_settings({
+                ('SQLALCHEMY', 'DB_TYPE'): 'oracle+oracledb',
+                ('SQLALCHEMY', 'DB_USER'): 'app',
+                ('SQLALCHEMY', 'DB_PASSWORD'): 'pw',
+                ('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '30000',
+            })
+
+    def test_call_timeout_valid_passes_for_oracle(self):
+        s = _make_mock_settings({
+            ('SQLALCHEMY', 'DB_TYPE'): 'oracle+oracledb',
+            ('SQLALCHEMY', 'DB_USER'): 'app',
+            ('SQLALCHEMY', 'DB_PASSWORD'): 'pw',
+            ('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '15000',
+        })
+        self.assertEqual(s.ORACLE_CALL_TIMEOUT, 15000)
+
+    def test_validation_skipped_for_sqlite(self):
+        # Sqlite + CALL_TIMEOUT=0 must NOT raise because the check is gated
+        # on 'oracle' in DB_TYPE.
+        s = _make_mock_settings({
+            ('SQLALCHEMY', 'ORACLE_CALL_TIMEOUT'): '0',
+        })
+        self.assertEqual(s.ORACLE_CALL_TIMEOUT, 0)
+
+
+# ---------------------------------------------------------------------------
+# Settings — removed/deprecated WSGI keys (issue #34, §9.3)
+# ---------------------------------------------------------------------------
+
+class TestSettingsRemovedWsgiKeys(unittest.TestCase):
+    """WSGI_THREAD_POOL and WSGI_ACCEPTED_QUEUE_SIZE were removed in 2.1.12 and
+    must hard-fail boot when present."""
+
+    def test_thread_pool_present_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            _make_mock_settings({('WSGI', 'WSGI_THREAD_POOL'): '10'})
+        self.assertIn('WSGI_THREAD_POOL', str(ctx.exception))
+
+    def test_accepted_queue_size_present_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            _make_mock_settings({('WSGI', 'WSGI_ACCEPTED_QUEUE_SIZE'): '100'})
+        self.assertIn('WSGI_ACCEPTED_QUEUE_SIZE', str(ctx.exception))
+
+
+class TestSettingsDeprecatedWsgiKeys(unittest.TestCase):
+    """WSGI_SSL_CERT/PRIVKEY and WSGI_MAX_REQUEST_BODY_SIZE are deprecated but
+    must NOT raise -- only log a WARNING."""
+
+    def test_ssl_cert_present_logs_warning_does_not_raise(self):
+        with self.assertLogs('grapinator.settings', level='WARNING') as cm:
+            s = _make_mock_settings({
+                ('WSGI', 'WSGI_SSL_CERT'): '/etc/tls/cert.pem',
+                ('WSGI', 'WSGI_SSL_PRIVKEY'): '/etc/tls/key.pem',
+            })
+        self.assertEqual(s.WSGI_SSL_CERT, '/etc/tls/cert.pem')
+        self.assertTrue(any('deprecated' in r.getMessage().lower() for r in cm.records))
+
+    def test_max_request_body_size_logs_warning_does_not_raise(self):
+        with self.assertLogs('grapinator.settings', level='WARNING') as cm:
+            s = _make_mock_settings({
+                ('WSGI', 'WSGI_MAX_REQUEST_BODY_SIZE'): '1048576',
+            })
+        self.assertEqual(s.WSGI_MAX_REQUEST_BODY_SIZE, 1048576)
+        self.assertTrue(any('deprecated' in r.getMessage().lower() for r in cm.records))
 
 
 if __name__ == '__main__':
