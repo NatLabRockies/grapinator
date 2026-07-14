@@ -2,6 +2,18 @@
 
 All notable changes to Grapinator
 
+## [2.1.13] - 2026-07-14
+
+### Fixed
+
+- **Pin `oracledb` to `==3.4.2`** (issue #38, `setup.cfg`) — Versions of the
+  `oracledb` driver newer than 3.4.2 intermittently raise
+  `unknown encoding: ""` errors when serving GraphQL responses from Oracle
+  backends.  The dependency spec is downgraded from `oracledb>=3.4.2` to an
+  exact pin (`oracledb==3.4.2`) until the upstream regression is resolved.
+
+---
+
 ## [2.1.12] - 2026-06-25
 
 ### Changed
