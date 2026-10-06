@@ -353,39 +353,7 @@ class TestSettingsPoolDefaults(unittest.TestCase):
         self.assertIsInstance(self.settings.DB_POOL_RECYCLE, (int, type(None)))
 
 
-class TestGraphQLSettings(unittest.TestCase):
-
-    def test_default_limits_and_regex_policy(self):
-        s = _make_mock_settings({})
-        self.assertIsNone(s.GQL_MAX_QUERY_DEPTH)
-        self.assertIsNone(s.GQL_MAX_INTROSPECTION_DEPTH)
-        self.assertIsNone(s.GQL_MAX_QUERY_COMPLEXITY)
-        self.assertIsNone(s.GQL_MAX_INTROSPECTION_COMPLEXITY)
-        self.assertIsNone(s.GQL_MAX_QUERY_FIELDS)
-        self.assertIsNone(s.GQL_MAX_ALIASES)
-        self.assertIsNone(s.GQL_MAX_PAGE_SIZE)
-        self.assertTrue(s.GQL_ALLOW_REGEX)
-
-    def test_graphql_limits_and_persisted_query_path_load(self):
-        s = _make_mock_settings({
-            ('GRAPHENE', 'GQL_MAX_QUERY_DEPTH'): '8',
-            ('GRAPHENE', 'GQL_MAX_INTROSPECTION_DEPTH'): '24',
-            ('GRAPHENE', 'GQL_MAX_INTROSPECTION_COMPLEXITY'): '7000',
-            ('GRAPHENE', 'GQL_MAX_PAGE_SIZE'): '25',
-            ('GRAPHENE', 'GQL_ALLOW_REGEX'): 'True',
-            ('GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'): 'queries.json',
-        })
-        self.assertEqual(s.GQL_MAX_QUERY_DEPTH, 8)
-        self.assertEqual(s.GQL_MAX_INTROSPECTION_DEPTH, 24)
-        self.assertEqual(s.GQL_MAX_INTROSPECTION_COMPLEXITY, 7000)
-        self.assertEqual(s.GQL_MAX_PAGE_SIZE, 25)
-        self.assertTrue(s.GQL_ALLOW_REGEX)
-        self.assertEqual(s.GQL_PERSISTED_QUERIES_FILE, 'queries.json')
-
-    def test_nonpositive_limits_are_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, 'GQL_MAX_ALIASES'):
-            _make_mock_settings({('GRAPHENE', 'GQL_MAX_ALIASES'): '0'})
-
+class TestNorthwindExampleSettings(unittest.TestCase):
     def test_northwind_example_csp_allows_graphiql_assets(self):
         import os
         example_ini = os.path.abspath(os.path.join(

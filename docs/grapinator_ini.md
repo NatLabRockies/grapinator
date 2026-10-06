@@ -31,7 +31,7 @@ gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:
 GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini \
     gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 
-# Use the Northwind example with explicit GraphQL budgets
+# Use the Northwind example configuration
 GRAPINATOR_CONFIG="$PWD/grapinator/resources/grapinator_northwind_example.ini" \
     gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 ```
@@ -53,56 +53,18 @@ At startup, Grapinator reads the encryption key from the `GQLAPI_CRYPT_KEY` envi
 and passes it to `CryptoConfigParser`.  When the parser encounters a value wrapped in `enc(...)`,
 it decrypts the inner token automatically before returning the value.
 
-### Generating a key
+## [GRAPHENE]
 
-CryptoConfig installs a helper command-line utility called `cryptocfg.py`.  Use the `--genkey`
-flag to generate a new Fernet encryption key:
+GraphQL schema configuration.
 
-```bash
-cryptocfg.py --genkey
-# Example output: jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=
-```
+| Setting | Type | Description |
+|---------|------|-------------|
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
 
-Store this key in a secure location (e.g. a secrets manager or `.env` file) and export it before
-starting the application:
-
-```bash
-export GQLAPI_CRYPT_KEY=<your-fernet-key>
-```
-
-> **Important:** The same key must be used for both encrypting values and running the application.
-> If the key changes, all encrypted values in the ini file must be re-encrypted.
-
-### Encrypting a password
-
-Use `cryptocfg.py` with the `-e` flag to encrypt a value.  Pass the plaintext string via `-i`
-and the key via `-p`:
-
-```bash
-cryptocfg.py -i 'my_db_password' -p 'jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=' -e
-# Example output: gAAAAABa8Ipc...
-```
-
-Place the output inside `enc(...)` in the ini file:
-
+**Example:**
 ```ini
-DB_PASSWORD = enc(gAAAAABa8Ipc...)
-```
-
-CryptoConfigParser recognises the `enc(...)` pattern (case-insensitive) and decrypts the value
-at read time.  Plain-text values are returned unchanged, so encryption is opt-in per value.
-
-### Decrypting a value (verification)
-
-To verify an encrypted value, use the `-d` flag:
-
-```bash
-cryptocfg.py -i 'gAAAAABa8Ipc...' -p 'jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=' -d
-# Output: my_db_password
-```
-
-### cryptocfg.py reference
-
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
 ```
 use: cryptocfg.py [options]
 where options include:
@@ -117,54 +79,16 @@ where options include:
 
 ## [GRAPHENE]
 
-GraphQL schema and request-budget configuration. The query budgets below are
-all **unset by default**, preserving the previous unrestricted behavior. Set
-only the limits appropriate for the schema and client workload. A complete
-configuration with illustrative values for the bundled Northwind database is
-available in [grapinator_northwind_example.ini](../grapinator/resources/grapinator_northwind_example.ini).
+GraphQL schema configuration.
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `GQL_SCHEMA` | path | `schema.dct` in bundled config | Schema dictionary (`.dct`). A relative filename is resolved beside the active INI; absolute paths are used as-is. |
-| `GQL_MAX_QUERY_DEPTH` | integer | Unset | Maximum nested field depth for normal operations. Each selected field adds one level; aliases and fragments do not create separate depth levels, though fragment selections are counted. A low value can reject legitimate relationship queries. |
-| `GQL_MAX_INTROSPECTION_DEPTH` | integer | Unset | Separate depth ceiling for operations whose root selections are introspection fields such as `__schema` and `__type`. Keep this high enough for GraphiQL’s schema introspection query. |
-| `GQL_MAX_QUERY_COMPLEXITY` | integer | Unset | Maximum estimated cost of a normal operation. The estimate weights selected fields by depth and collection fan-out; it is a guardrail, not a database execution-time guarantee. |
-| `GQL_MAX_INTROSPECTION_COMPLEXITY` | integer | Unset | Separate estimated-cost ceiling for schema introspection. Introspection traverses large finite schema metadata and should not be constrained by the same list weights used for database collections. |
-| `GQL_MAX_QUERY_FIELDS` | integer | Unset | Maximum selected field occurrences. Fields expanded through fragments count each time they are selected. This bounds the validation traversal and limits very broad documents. |
-| `GQL_MAX_ALIASES` | integer | Unset | Maximum aliases in one operation. Aliases can repeat an expensive root field, so this is useful alongside complexity and field-count limits. |
-| `GQL_MAX_PAGE_SIZE` | integer | Unset | Maximum Relay `first`/`last` value and maximum rows returned by a generated relationship-list resolver. When set, a connection without `first` or `last` is capped at this value. When unset, Grapinator does not add an implicit page size. |
-| `GQL_ALLOW_REGEX` | boolean | `True` | Enables database regex filtering. Set to `False` to reject `matches: "regex"` and `matches: "re"`. When enabled, the existing 200-character pattern limit still applies, but does not guarantee bounded regex execution time. |
-| `GQL_PERSISTED_QUERIES_FILE` | path | Unset | Optional JSON object mapping lowercase SHA-256 hashes of exact query text to query documents. When configured, it is a strict allowlist: ordinary query text must be registered, and hash-only persisted-query requests must match. Relative paths resolve beside the active INI. |
-
-All numeric budget settings must be positive integers. Leave a setting out to
-disable that budget; setting it to zero is an error. Limits combine: an
-operation must pass every configured depth, cost, field-count, alias, and page
-size check. Configure `GQL_MAX_PAGE_SIZE` when relying on complexity estimates
-for collection queries, especially when clients can supply page sizes through
-variables.
-
-`GQL_PERSISTED_QUERIES_FILE` is different from a performance budget: once set,
-it rejects every operation not in the file. Entries use the form:
-
-```json
-{
-    "<sha256-of-the-exact-query-text>": "{ employees(first: 10) { edges { node { employee_id } } } }"
-}
-```
-
-Generate each key from the exact UTF-8 query string, including whitespace and
-newlines. Do not enable the setting until the file contains all operations the
-clients need.
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
 
 **Example:**
 ```ini
 [GRAPHENE]
 GQL_SCHEMA = schema.dct
-# The Northwind example file sets illustrative finite values for these.
-# Leave them out to retain the previous unbounded behavior.
 ```
 
 ---

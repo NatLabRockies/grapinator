@@ -9,14 +9,9 @@ All notable changes to Grapinator
 - **Enforce entity and row authorization on every ORM load** (issue #40) — Entity
   role and optional `ROW_AUTH_CLAIMS` predicates now apply to root queries,
   relationship loads, and Relay node lookups. Missing row claims fail closed.
-- **Prevent restricted-field inference** — Filter and sort operations on
-  role-restricted fields require a matching caller role; hidden and
-  non-queryable fields remain excluded from sorting.
-- **Bound GraphQL operations** — Optional depth, weighted complexity, field,
-  alias, and page-size limits can be enabled before execution. These budgets are
-  unset by default to preserve prior behavior. Regex filtering remains enabled
-  by default for compatibility. An optional static persisted-query hash map can
-  restrict execution to approved operations.
+- **Hide field-level restricted values** — Fields marked with `gql_auth_roles`
+  are omitted from the GraphQL schema for every caller, including output fields,
+  filter arguments, sorting, and introspection.
 
 ---
 

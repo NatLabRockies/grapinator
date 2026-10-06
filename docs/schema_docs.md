@@ -26,10 +26,10 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
     - **gql_type:** Graphene type
     - **gql_description:** Description string for the GraphiQL web browser
     - **gql_deprecation_reason:** *(Optional)* Marks the field as deprecated in the GraphQL schema. The string value is displayed in GraphiQL's schema explorer as the reason for deprecation. Deprecated fields are hidden in GraphiQL by default but remain fully queryable. Omit this key (or set it to `None`) for non-deprecated fields.
-    - **gql_auth_roles:** *(Optional)* Field-level role gate — list of role strings required to
-      read this field.  Callers without a matching role receive `null` for this field; they can
-      still query and see the field in the schema (introspection is unrestricted).  Omit or set
-      to `None` / `[]` for public fields (no restriction).
+        - **gql_auth_roles:** *(Optional)* A non-empty list marks the field as sensitive. The field
+            is omitted from the GraphQL type for all callers and cannot be selected, filtered, sorted,
+            or introspected. Role names are retained as metadata but do not grant conditional
+            visibility. Omit or set to `None` / `[]` to expose the field.
     - **db_col_name:** Database column name.  
     - **db_type:** SQLAlchemy database type
 - **RELATIONSHIPS:** List of dictionaries containing SQLAlchemy class model [relationships](https://docs.sqlalchemy.org/en/13/orm/relationship_api.html#sqlalchemy.orm.relationship)
@@ -459,22 +459,21 @@ whether the entity even exists.
 
 ### Field-level access: `gql_auth_roles`
 
-`gql_auth_roles` is an optional key inside a field descriptor.  It gates access to a **single
-field**.  The entity query itself is allowed for all callers; only the protected field returns
-`null` for callers who lack the required role. Auth-restricted fields remain introspectable and
-may be used as filter arguments or sort keys only by callers whose roles match the field policy.
-Requests by callers without a matching role are rejected before a database query is run.
+`gql_auth_roles` is an optional key inside a field descriptor. A non-empty value marks the field
+as sensitive and removes it from the generated GraphQL type for every caller, regardless of
+roles. It will not appear in GraphiQL documentation/introspection and cannot be selected,
+filtered, or sorted. This is static schema hiding, not a role-dependent field grant. Use
+`AUTH_ROLES` when the entire entity should be role-gated.
 
 ```python
 'FIELDS': [
     {
         'gql_col_name': 'salary',
         'gql_type': graphene.Float,
-        'gql_description': 'Employee salary — HR and finance only.',
+        'gql_description': 'Sensitive employee salary; not exposed in GraphQL.',
         'db_col_name': 'Salary',
         'db_type': Float,
-        # Only callers with the 'hr' OR 'finance' role receive the real value.
-        # All other callers receive null for this field.
+        # A non-empty marker hides the field from GraphQL for every caller.
         'gql_auth_roles': ['hr', 'finance'],
     },
     {
@@ -490,22 +489,23 @@ Requests by callers without a matching role are rejected before a database query
 
 ### Combining both levels
 
-You can stack `AUTH_ROLES` and `gql_auth_roles` on the same entity.  For example: the entity
-is visible to all authenticated users (`AUTH_ROLES` absent), but the `salary` field within it
-is restricted to HR (`gql_auth_roles: ['hr']`).
+`AUTH_ROLES` can gate an entity while `gql_auth_roles` hides selected sensitive fields from the
+schema altogether. The field marker is not a role-dependent visibility rule; matching a role does
+not add that field back to GraphQL output or introspection.
 
 ### Role name conventions
 
-Role names are arbitrary strings.  They must match the values in the JWT roles claim exactly
-(case-sensitive).  The roles claim name and its location inside the token are controlled by
-`AUTH_ROLES_CLAIM` in `grapinator.ini` (default: `roles`).
+Entity role names are arbitrary strings. They must match the values in the JWT roles claim
+exactly (case-sensitive). The roles claim name and its location inside the token are controlled
+by `AUTH_ROLES_CLAIM` in `grapinator.ini` (default: `roles`). `gql_auth_roles` values are not
+matched against JWT roles; they only mark fields for schema-wide hiding.
 
 #### Azure Entra ID
 
 Define App Roles in your App Registration with the desired `Value` strings (e.g. `hr`,
 `finance`).  An Entra ID admin assigns users or groups to each role.  The token's `roles`
 claim will contain the `Value` strings — so those values must match what you put in
-`gql_auth_roles` / `AUTH_ROLES`.  You (the App Owner) define the role names; only the
+`AUTH_ROLES`. You (the App Owner) define the role names; only the
 assignment of people to roles requires an admin.
 
 #### Keycloak

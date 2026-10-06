@@ -14,8 +14,6 @@ os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 
 import time
 import unittest
-import hashlib
-import tempfile
 from unittest.mock import MagicMock, patch
 
 from . import context  # noqa: F401
@@ -26,21 +24,6 @@ from grapinator.auth import BearerAuthMiddleware
 from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from grapinator.security import register_model_policy, set_request_context
-from grapinator.query_limits import (
-    QueryLimitsRule,
-    load_persisted_queries,
-    resolve_persisted_query,
-)
-from graphql import (
-    GraphQLError,
-    GraphQLField,
-    GraphQLObjectType,
-    GraphQLSchema,
-    GraphQLString,
-    parse,
-    specified_rules,
-    validate,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -122,118 +105,6 @@ class TestRequestScopedOrmPolicies(unittest.TestCase):
         self._set_context([], {'organization': {'id': 'alpha'}})
         parent = self.session.get(_PolicyParent, 1)
         self.assertEqual(parent.items, [])
-
-    def test_generated_relationship_resolver_applies_sql_limit(self):
-        from grapinator.schema import _resolve_relationship_list
-        self._set_context(['reader'], {'organization': {'id': 'alpha'}})
-        parent = self.session.get(_PolicyParent, 1)
-        with patch('grapinator.schema.db_session', self.session):
-            items = _resolve_relationship_list(parent, 'items', max_rows=1)
-        self.assertEqual([item.id for item in items], [1])
-
-
-class TestGraphQLQueryLimits(unittest.TestCase):
-    def setUp(self):
-        self.leaf_type = GraphQLObjectType(
-            'LimitLeaf', {'value': GraphQLField(GraphQLString)}
-        )
-        self.query_type = GraphQLObjectType(
-            'LimitQuery', {
-                'root': GraphQLField(self.leaf_type),
-                'value': GraphQLField(GraphQLString),
-            }
-        )
-        self.schema = GraphQLSchema(query=self.query_type)
-
-    def test_measure_counts_fields_aliases_depth_and_cost(self):
-        document = parse('query { alias: root { value } }')
-        operation = document.definitions[0]
-        counts = QueryLimitsRule._measure(operation.selection_set, {})
-        self.assertEqual(counts, (2, 1, 2, 3))
-
-    def test_complexity_weights_connection_pages(self):
-        from graphql import GraphQLArgument, GraphQLInt, GraphQLList
-        edge_type = GraphQLObjectType(
-            'LimitEdge', {'node': GraphQLField(self.leaf_type)}
-        )
-        connection_type = GraphQLObjectType(
-            'LimitConnection', {'edges': GraphQLField(GraphQLList(edge_type))}
-        )
-        query_type = GraphQLObjectType(
-            'LimitRoot', {
-                'items': GraphQLField(
-                    connection_type,
-                    args={'first': GraphQLArgument(GraphQLInt)},
-                )
-            }
-        )
-        schema = GraphQLSchema(query=query_type)
-        document = parse('{ items(first: 2) { edges { node { value } } } }')
-        counts = QueryLimitsRule._measure(
-            document.definitions[0].selection_set,
-            {},
-            schema=schema,
-            parent_type=query_type,
-        )
-        self.assertEqual(counts[3], 19)
-
-    def test_depth_limit_is_enforced_during_validation(self):
-        class ShallowLimitsRule(QueryLimitsRule):
-            GQL_MAX_QUERY_DEPTH = 1
-
-        errors = validate(
-            self.schema,
-            parse('{ root { value } }'),
-            rules=specified_rules + (ShallowLimitsRule,),
-        )
-        self.assertIn('depth', errors[0].message.lower())
-
-    def test_alias_and_complexity_limits_are_enforced(self):
-        class StrictLimitsRule(QueryLimitsRule):
-            GQL_MAX_ALIASES = 1
-            GQL_MAX_QUERY_COMPLEXITY = 2
-
-        errors = validate(
-            self.schema,
-            parse('{ first: root { value } second: value }'),
-            rules=specified_rules + (StrictLimitsRule,),
-        )
-        messages = [error.message for error in errors]
-        self.assertTrue(any('alias' in message.lower() for message in messages))
-        self.assertTrue(any('complexity' in message.lower() for message in messages))
-
-    def test_field_count_limit_is_enforced_during_validation(self):
-        class SmallFieldCountRule(QueryLimitsRule):
-            GQL_MAX_QUERY_FIELDS = 1
-
-        errors = validate(
-            self.schema,
-            parse('{ __typename __typename }'),
-            rules=specified_rules + (SmallFieldCountRule,),
-        )
-        self.assertIn('field count', errors[0].message.lower())
-
-    def test_static_persisted_query_can_be_resolved_by_hash(self):
-        query = '{ __typename }'
-        query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as query_file:
-            import json
-            json.dump({query_hash: query}, query_file)
-            query_file.flush()
-            persisted = load_persisted_queries(query_file.name)
-        resolved = resolve_persisted_query(
-            None,
-            {'persistedQuery': {'version': 1, 'sha256Hash': query_hash}},
-            persisted,
-        )
-        self.assertEqual(resolved, query)
-
-    def test_unregistered_persisted_query_is_rejected(self):
-        with self.assertRaises(GraphQLError):
-            resolve_persisted_query(
-                '{ __typename }', None, {'0' * 64: '{ __typename }'}
-            )
-
 
 def _mock_settings(**overrides):
     s = MagicMock()
@@ -470,12 +341,10 @@ class TestRegexLengthCap(unittest.TestCase):
         mock_query.order_by = MagicMock(return_value=mock_query)
         info = MagicMock()
         info.context = {'user_roles': [], 'authenticated': False}
-        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query), \
-            patch('grapinator.schema.settings.GQL_ALLOW_REGEX', True):
+        with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
             MyConnectionField.get_query(
                 db_Employees, info,
                 matches='regex',
-                _allow_regex=True,
                 first_name=pattern,
             )
         return mock_query
@@ -520,7 +389,6 @@ class TestRegexLengthCap(unittest.TestCase):
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='regex',
-                    _allow_regex=True,
                     first_name=pattern,
                 )
         self.assertIn('200', str(ctx.exception))
@@ -539,7 +407,6 @@ class TestRegexLengthCap(unittest.TestCase):
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='regex',
-                    _allow_regex=True,
                     first_name=pattern,
                 )
 
@@ -557,7 +424,6 @@ class TestRegexLengthCap(unittest.TestCase):
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='re',
-                    _allow_regex=True,
                     first_name=pattern,
                 )
 

@@ -153,15 +153,6 @@ class Settings(object):
 
     # Graphene schema file path
     GQL_SCHEMA = None
-    GQL_MAX_QUERY_DEPTH = None
-    GQL_MAX_INTROSPECTION_DEPTH = None
-    GQL_MAX_QUERY_COMPLEXITY = None
-    GQL_MAX_INTROSPECTION_COMPLEXITY = None
-    GQL_MAX_QUERY_FIELDS = None
-    GQL_MAX_ALIASES = None
-    GQL_MAX_PAGE_SIZE = None
-    GQL_ALLOW_REGEX = True
-    GQL_PERSISTED_QUERIES_FILE = None
 
     # Authentication / JWT settings (all optional; default to auth off)
     AUTH_MODE = 'off'              # 'off' | 'mixed' | 'required'
@@ -421,27 +412,6 @@ class Settings(object):
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
-            for _option in (
-                'GQL_MAX_QUERY_DEPTH', 'GQL_MAX_INTROSPECTION_DEPTH',
-                'GQL_MAX_QUERY_COMPLEXITY', 'GQL_MAX_INTROSPECTION_COMPLEXITY',
-                'GQL_MAX_QUERY_FIELDS', 'GQL_MAX_ALIASES', 'GQL_MAX_PAGE_SIZE',
-            ):
-                if properties.has_option('GRAPHENE', _option):
-                    setattr(self, _option, properties.getint('GRAPHENE', _option))
-            if properties.has_option('GRAPHENE', 'GQL_ALLOW_REGEX'):
-                self.GQL_ALLOW_REGEX = properties.getboolean('GRAPHENE', 'GQL_ALLOW_REGEX')
-            if properties.has_option('GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'):
-                self.GQL_PERSISTED_QUERIES_FILE = properties.get(
-                    'GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'
-                )
-            for _option in (
-                'GQL_MAX_QUERY_DEPTH', 'GQL_MAX_INTROSPECTION_DEPTH',
-                'GQL_MAX_QUERY_COMPLEXITY', 'GQL_MAX_INTROSPECTION_COMPLEXITY',
-                'GQL_MAX_QUERY_FIELDS', 'GQL_MAX_ALIASES', 'GQL_MAX_PAGE_SIZE',
-            ):
-                option_value = getattr(self, _option)
-                if option_value is not None and option_value <= 0:
-                    raise RuntimeError(f'{_option} must be a positive integer.')
 
             # load AUTH section (entirely optional — defaults are set above)
             if properties.has_section('AUTH'):

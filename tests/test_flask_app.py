@@ -14,7 +14,6 @@ import os
 os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 
 import json
-import hashlib
 import html
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -443,14 +442,11 @@ class TestFixedGraphQLViewNoHtmlEscaping(unittest.TestCase):
         self.assertEqual(json.loads(content), variables)
 
 
-class TestGraphQLRequestLimits(unittest.TestCase):
+class TestGraphQLSchemaIntrospection(unittest.TestCase):
 
     def setUp(self):
         self.client = app.test_client()
         self.endpoint = settings.FLASK_API_ENDPOINT
-
-    def _post(self, query):
-        return self.client.post(self.endpoint, json={'query': query}).get_json()
 
     def test_standard_introspection_query_fetches_schema(self):
         from graphql import get_introspection_query
@@ -460,23 +456,6 @@ class TestGraphQLRequestLimits(unittest.TestCase):
         body = response.get_json()
         self.assertNotIn('errors', body)
         self.assertEqual(body['data']['__schema']['queryType']['name'], 'Query')
-
-    def test_persisted_query_hash_resolves_without_query_text(self):
-        query = '{ __typename }'
-        query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()
-        with patch('grapinator.app._PERSISTED_QUERIES', {query_hash: query}):
-            response = self.client.post(self.endpoint, json={
-                'extensions': {
-                    'persistedQuery': {'version': 1, 'sha256Hash': query_hash}
-                }
-            })
-        self.assertEqual(response.get_json()['data'], {'__typename': 'Query'})
-
-    def test_persisted_query_mode_rejects_unlisted_documents(self):
-        query = '{ __typename }'
-        with patch('grapinator.app._PERSISTED_QUERIES', {'0' * 64: query}):
-            result = self._post(query)
-        self.assertIn('allowlist', result['errors'][0]['message'])
 
 
 if __name__ == '__main__':

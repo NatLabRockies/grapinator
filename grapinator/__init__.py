@@ -51,11 +51,6 @@ log.info(
 # directory.  Resolve it now so the rest of the app always sees an absolute path.
 if settings.GQL_SCHEMA and not path.isabs(settings.GQL_SCHEMA):
     settings.GQL_SCHEMA = path.join(_resources_dir, settings.GQL_SCHEMA)
-if settings.GQL_PERSISTED_QUERIES_FILE and not path.isabs(settings.GQL_PERSISTED_QUERIES_FILE):
-    settings.GQL_PERSISTED_QUERIES_FILE = path.join(
-        _resources_dir, settings.GQL_PERSISTED_QUERIES_FILE
-    )
-
 # get app schema settings for dynamic class creation, exit if something missing
 log.info('Loading schema: %s', settings.GQL_SCHEMA)
 try:
