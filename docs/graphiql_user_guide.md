@@ -16,6 +16,31 @@ http://localhost:8443/northwind/gql
 
 > **Note:** The host, port, and path may differ in your deployment. Check with your administrator if the default URL does not respond.
 
+### Using GraphiQL with RBAC
+
+For local RBAC work, use `grapinator/resources/grapinator_rbac.ini` with
+`AUTH_MODE = mixed` and `GRAPHIQL_ACCESS = open`. This lets the browser load the
+IDE HTML without a token; it does **not** make GraphQL queries public. Every
+query, including schema introspection, still needs a valid Bearer token.
+
+Start the helper from the repository root after exporting `GQLAPI_CRYPT_KEY`:
+
+```bash
+export GQLAPI_CRYPT_KEY=your-local-crypt-config-key
+./tools/run_rbac_graphiql.sh
+```
+
+The script starts Gunicorn and prints a short-lived HR token as a JSON header.
+In GraphiQL, open the **HTTP Headers** panel and paste that JSON, for example:
+
+```json
+{"Authorization": "Bearer eyJ..."}
+```
+
+Then use the toolbar's schema re-fetch action. The protected fields will appear
+in the Docs explorer for roles included in the token. Do not use the bundled
+development secret or this helper in a shared or production environment.
+
 ---
 
 ## Interface Layout

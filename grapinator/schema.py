@@ -21,6 +21,19 @@ from sqlalchemy import and_, or_, desc, asc, false as sql_false
 import graphene
 from graphene import relay
 from graphene_sqlalchemy import SQLAlchemyObjectType, SQLAlchemyConnectionField
+from functools import lru_cache
+from graphql import (
+    GraphQLArgument,
+    GraphQLField,
+    GraphQLInputField,
+    GraphQLInputObjectType,
+    GraphQLInterfaceType,
+    GraphQLList,
+    GraphQLNonNull,
+    GraphQLObjectType,
+    GraphQLSchema,
+    GraphQLUnionType,
+)
 import datetime
 import logging
 from grapinator import schema_settings
@@ -35,6 +48,156 @@ logger = logging.getLogger(__name__)
 _ENTITY_AUTH_ROLES = {}
 _SORTABLE_FIELDS = {}
 _RESTRICTED_SORT_FIELDS = {}
+_FIELD_AUTH_ROLES = {}
+_FILTER_FIELD_AUTH_ROLES = {}
+_SORT_FIELD_AUTH_ROLES = {}
+_QUERY_FILTER_AUTH_ROLES = {}
+
+
+def _make_role_field_resolver(field_name, required_roles, resolver=None):
+    def _resolve(root, info, **kwargs):
+        context = info.context if info.context is not None else {}
+        user_roles = context.get('user_roles', []) if isinstance(context, dict) else []
+        if not set(user_roles) & set(required_roles):
+            return None
+        if resolver is not None:
+            return resolver(root, info, **kwargs)
+        return getattr(root, field_name, None)
+    return _resolve
+
+
+def get_schema_for_roles(user_roles):
+    """Return a cached GraphQL schema exposing fields allowed to these roles."""
+    role_key = tuple(sorted(set(user_roles or ())))
+    return _schema_for_role_key(role_key)
+
+
+@lru_cache(maxsize=128)
+def _schema_for_role_key(role_key):
+    roles = set(role_key)
+    base_schema = gql_schema.graphql_schema
+    cloned_types = {}
+
+    def clone_type(type_):
+        if type_ is None:
+            return None
+        if isinstance(type_, GraphQLNonNull):
+            return GraphQLNonNull(clone_type(type_.of_type))
+        if isinstance(type_, GraphQLList):
+            return GraphQLList(clone_type(type_.of_type))
+        if type_.name.startswith('__'):
+            return type_
+        if type_.name in cloned_types:
+            return cloned_types[type_.name]
+
+        if isinstance(type_, GraphQLObjectType):
+            clone = GraphQLObjectType(
+                type_.name,
+                lambda: clone_fields(type_),
+                interfaces=lambda: [clone_type(interface) for interface in type_.interfaces],
+                is_type_of=type_.is_type_of,
+                extensions=type_.extensions,
+                description=type_.description,
+                ast_node=type_.ast_node,
+                extension_ast_nodes=type_.extension_ast_nodes,
+            )
+        elif isinstance(type_, GraphQLInterfaceType):
+            clone = GraphQLInterfaceType(
+                type_.name,
+                lambda: clone_fields(type_),
+                interfaces=lambda: [clone_type(interface) for interface in type_.interfaces],
+                resolve_type=type_.resolve_type,
+                extensions=type_.extensions,
+                description=type_.description,
+                ast_node=type_.ast_node,
+                extension_ast_nodes=type_.extension_ast_nodes,
+            )
+        elif isinstance(type_, GraphQLUnionType):
+            clone = GraphQLUnionType(
+                type_.name,
+                types=lambda: [clone_type(member) for member in type_.types],
+                resolve_type=type_.resolve_type,
+                extensions=type_.extensions,
+                description=type_.description,
+                ast_node=type_.ast_node,
+                extension_ast_nodes=type_.extension_ast_nodes,
+            )
+        elif isinstance(type_, GraphQLInputObjectType):
+            clone = GraphQLInputObjectType(
+                type_.name,
+                lambda: {
+                    name: GraphQLInputField(
+                        clone_type(field.type),
+                        default_value=field.default_value,
+                        description=field.description,
+                        deprecation_reason=field.deprecation_reason,
+                        out_name=field.out_name,
+                        extensions=field.extensions,
+                        ast_node=field.ast_node,
+                    )
+                    for name, field in type_.fields.items()
+                },
+                out_type=type_.out_type,
+                extensions=type_.extensions,
+                description=type_.description,
+                ast_node=type_.ast_node,
+                extension_ast_nodes=type_.extension_ast_nodes,
+                is_one_of=type_.is_one_of,
+            )
+        else:
+            return type_
+
+        cloned_types[type_.name] = clone
+        return clone
+
+    def clone_fields(type_):
+        protected_fields = _FIELD_AUTH_ROLES.get(type_.name, {})
+        fields = {}
+        for name, field in type_.fields.items():
+            field_roles = protected_fields.get(name)
+            if field_roles and not roles.intersection(field_roles):
+                continue
+
+            filter_roles = _QUERY_FILTER_AUTH_ROLES.get(name, {})
+            args = {
+                arg_name: GraphQLArgument(
+                    clone_type(arg.type),
+                    default_value=arg.default_value,
+                    description=arg.description,
+                    deprecation_reason=arg.deprecation_reason,
+                    out_name=arg.out_name,
+                    extensions=arg.extensions,
+                    ast_node=arg.ast_node,
+                )
+                for arg_name, arg in field.args.items()
+                if not filter_roles.get(arg_name)
+                or roles.intersection(filter_roles[arg_name])
+            }
+            fields[name] = GraphQLField(
+                clone_type(field.type),
+                args=args,
+                resolve=field.resolve,
+                subscribe=field.subscribe,
+                description=field.description,
+                deprecation_reason=field.deprecation_reason,
+                extensions=field.extensions,
+                ast_node=field.ast_node,
+            )
+        return fields
+
+    return GraphQLSchema(
+        query=clone_type(base_schema.query_type),
+        mutation=clone_type(base_schema.mutation_type),
+        subscription=clone_type(base_schema.subscription_type),
+        types=[
+            clone_type(type_)
+            for name, type_ in base_schema.type_map.items()
+            if not name.startswith('__')
+        ],
+        directives=base_schema.directives,
+        description=base_schema.description,
+        extensions=base_schema.extensions,
+    )
 
 def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_col):
     """
@@ -59,27 +222,36 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
     """
     include_fields = {}
     exclude_fields = ()
+    _FIELD_AUTH_ROLES[clazz_name] = {
+        attr['name']: attr['auth_roles']
+        for attr in clazz_attrs
+        if attr.get('auth_roles')
+    }
     for attr in clazz_attrs:
-        if attr.get('auth_roles'):
+        if attr['ishidden']:
             exclude_fields += (attr['name'],)
-            continue
-        if attr['isresolver']:
+        elif attr['isresolver']:
             # Resolver fields are backed by a custom function rather than a
             # direct column value.  Both the field declaration and its
             # paired resolve_<name> method are injected into the class.
             attr_name = attr['name']
             resolver_name = "resolve_{}".format(attr_name)
             include_fields[attr_name] = attr['type'](attr['type_args'], description=attr['desc'])
-            include_fields[resolver_name] = attr['resolver_func']
-        elif attr['ishidden']:
-            # Hidden fields are excluded from the GraphQL type entirely so
-            # they cannot be queried or introspected by clients.
-            exclude_fields += (attr['name'],)
+            if attr.get('auth_roles'):
+                include_fields[resolver_name] = _make_role_field_resolver(
+                    attr_name, attr['auth_roles'], attr['resolver_func']
+                )
+            else:
+                include_fields[resolver_name] = attr['resolver_func']
         else:
             field_kwargs = {'description': attr['desc']}
             if attr.get('deprecation_reason'):
                 field_kwargs['deprecation_reason'] = attr['deprecation_reason']
             include_fields[attr['name']] = attr['type'](attr['type_args'], **field_kwargs)
+            if attr.get('auth_roles'):
+                include_fields['resolve_{}'.format(attr['name'])] = (
+                    _make_role_field_resolver(attr['name'], attr['auth_roles'])
+                )
 
     gql_attrs = {
         # Meta inner class binds this Graphene type to its SQLAlchemy model
@@ -175,6 +347,14 @@ class MyConnectionField(SQLAlchemyConnectionField):
         sort_by_name = args.pop('sort_by', None)
         sort_dir = args.pop('sort_dir', None)
 
+        context = info.context if info.context is not None else {}
+        user_roles = context.get('user_roles', []) if isinstance(context, dict) else []
+        filter_roles = _FILTER_FIELD_AUTH_ROLES.get(model.__name__, {})
+        for field_name, value in args.items():
+            required_roles = filter_roles.get(field_name)
+            if value is not None and required_roles and not set(user_roles) & set(required_roles):
+                raise ValueError('Caller lacks a required role to filter by this field.')
+
         # Build ORDER BY only when a sort column is actually provided/non-None.
         # Validate sort_by_name against actual model attributes to prevent
         # client-controlled getattr on arbitrary/private model members.
@@ -184,6 +364,11 @@ class MyConnectionField(SQLAlchemyConnectionField):
             restricted_sort_fields = _RESTRICTED_SORT_FIELDS.get(model.__name__, set())
             if sort_by_name in restricted_sort_fields:
                 raise ValueError('This field cannot be used for sorting.')
+            required_sort_roles = _SORT_FIELD_AUTH_ROLES.get(
+                model.__name__, {}
+            ).get(sort_by_name)
+            if required_sort_roles and not set(user_roles) & set(required_sort_roles):
+                raise ValueError('Caller lacks a required role to sort by this field.')
             if (
                 sort_by_name.startswith('_')
                 or (sortable_fields is not None and sort_by_name not in sortable_fields)
@@ -303,14 +488,36 @@ for clazz in schema_settings.get_gql_classes():
         if column['isqueryable']
         and not column['ishidden']
         and not column['isresolver']
-        and not column.get('auth_roles')
     }
     _RESTRICTED_SORT_FIELDS[clazz['gql_db_class']] = {
         column['name'] for column in clazz['gql_columns']
         if column['ishidden']
         or column['isresolver']
         or not column['isqueryable']
-        or column.get('auth_roles')
+    }
+    _FILTER_FIELD_AUTH_ROLES[clazz['gql_db_class']] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles')
+        and column['isqueryable']
+        and not column['ishidden']
+        and not column['isresolver']
+    }
+    _SORT_FIELD_AUTH_ROLES[clazz['gql_db_class']] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles')
+        and column['isqueryable']
+        and not column['ishidden']
+        and not column['isresolver']
+    }
+    _QUERY_FILTER_AUTH_ROLES[clazz['gql_conn_query_name']] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles')
+        and column['isqueryable']
+        and not column['ishidden']
+        and not column['isresolver']
     }
     _gql_class_count += 1
 logger.info('GraphQL types built: %d', _gql_class_count)
@@ -342,7 +549,6 @@ def _make_gql_query_fields(cols):
             row['isqueryable']
             and row['ishidden'] is False
             and row['isresolver'] is False
-            and not row.get('auth_roles')
         ):
             extra_kwargs = {}
             if row.get('deprecation_reason'):

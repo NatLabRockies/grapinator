@@ -291,8 +291,70 @@ class TestSorting(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'cannot be used for sorting'):
                 MyConnectionField.get_query(_Item, MagicMock(), sort_by='age')
 
-    def test_role_restricted_field_is_not_a_filter_argument(self):
-        """RBAC-protected fields do not appear in connection filter arguments."""
+    def test_protected_sort_requires_matching_role(self):
+        from grapinator.schema import MyConnectionField, _SORT_FIELD_AUTH_ROLES
+        original = _SORT_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _SORT_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _SORT_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original is None else _SORT_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['reader']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            with self.assertRaisesRegex(ValueError, 'required role'):
+                MyConnectionField.get_query(_Item, info, sort_by='age')
+
+    def test_matching_role_can_filter_and_sort_protected_column(self):
+        from grapinator.schema import (
+            MyConnectionField, _FILTER_FIELD_AUTH_ROLES,
+            _SORT_FIELD_AUTH_ROLES,
+        )
+        original_filter_roles = _FILTER_FIELD_AUTH_ROLES.get(_Item.__name__)
+        original_sort_roles = _SORT_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _FILTER_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        _SORT_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _FILTER_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original_filter_roles is None else _FILTER_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original_filter_roles
+            )
+        )
+        self.addCleanup(
+            lambda: _SORT_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original_sort_roles is None else _SORT_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original_sort_roles
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['hr']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            query = MyConnectionField.get_query(
+                _Item, info, age=25, matches='gt', sort_by='age', sort_dir='asc'
+            )
+        self.assertEqual([item.age for item in query.all()], [30, 35])
+
+    def test_protected_filter_requires_matching_role(self):
+        from grapinator.schema import MyConnectionField, _FILTER_FIELD_AUTH_ROLES
+        original = _FILTER_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _FILTER_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _FILTER_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original is None else _FILTER_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['reader']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()) as base_query:
+            with self.assertRaisesRegex(ValueError, 'required role'):
+                MyConnectionField.get_query(_Item, info, age=25, matches='gt')
+        base_query.assert_not_called()
+
+    def test_role_restricted_field_is_available_for_schema_clone_filtering(self):
+        """The base schema exposes the argument; role schemas decide visibility."""
         from grapinator.schema import _make_gql_query_fields
         import graphene
         columns = [{
@@ -305,7 +367,7 @@ class TestSorting(unittest.TestCase):
             'auth_roles': ['hr'],
         }]
         fields = _make_gql_query_fields(columns)
-        self.assertNotIn('salary', fields)
+        self.assertIn('salary', fields)
 
 
 # ---------------------------------------------------------------------------

@@ -6,12 +6,22 @@ All notable changes to Grapinator
 
 ### Security
 
-- **Enforce entity and row authorization on every ORM load** (issue #40) — Entity
-  role and optional `ROW_AUTH_CLAIMS` predicates now apply to root queries,
-  relationship loads, and Relay node lookups. Missing row claims fail closed.
-- **Hide field-level restricted values** — Fields marked with `gql_auth_roles`
-  are omitted from the GraphQL schema for every caller, including output fields,
-  filter arguments, sorting, and introspection.
+- **Enforce RBAC on entity, row, and field access** (issue #40) — Entity role
+  gates apply to root connections, relationships, and Relay node lookups.
+  Optional `ROW_AUTH_CLAIMS` predicates scope rows using validated JWT claims
+  and fail closed when a required claim is absent. Fields marked with
+  `gql_auth_roles` are exposed in a role-specific GraphQL schema: callers with
+  a matching role can select, filter, and sort by them; other callers do not
+  see the output field or filter argument and cannot sort by its name.
+- **Restore prior GraphQL query behavior** — Removed the new `[GRAPHENE]`
+  depth, complexity, field-count, alias, page-size, regex-toggle, and
+  persisted-query settings and their enforcement. Existing regex matching and
+  pagination behavior are retained, including the existing regex-length cap.
+- **Support authenticated GraphiQL development** — The RBAC example INI serves
+  the IDE without a token; in mixed mode, role-restricted GraphQL data still
+  requires a valid token with a matching role. `tools/run_rbac_graphiql.sh`
+  starts Gunicorn and prints a short-lived development token for GraphiQL's
+  HTTP Headers panel.
 
 ---
 

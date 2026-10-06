@@ -457,6 +457,65 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
         self.assertNotIn('errors', body)
         self.assertEqual(body['data']['__schema']['queryType']['name'], 'Query')
 
+    def test_rbac_introspection_and_selection_follow_request_roles(self):
+        import grapinator.schema as schema_module
+        field_registry = schema_module._FIELD_AUTH_ROLES
+        filter_registry = schema_module._QUERY_FILTER_AUTH_ROLES
+        original_fields = dict(field_registry)
+        original_filters = dict(filter_registry)
+        field_registry['Employees'] = {'birth_date': ['hr']}
+        filter_registry['employees'] = {'birth_date': ['hr']}
+        schema_module._schema_for_role_key.cache_clear()
+        self.addCleanup(schema_module._schema_for_role_key.cache_clear)
+        self.addCleanup(field_registry.update, original_fields)
+        self.addCleanup(filter_registry.update, original_filters)
+        self.addCleanup(field_registry.clear)
+        self.addCleanup(filter_registry.clear)
+
+        introspection_query = (
+            '{ employeeType: __type(name: "Employees") { fields { name } } '
+            'queryType: __type(name: "Query") { fields { name args { name } } } }'
+        )
+        hr_response = self.client.post(
+            self.endpoint,
+            json={'query': introspection_query},
+            environ_overrides={
+                'grapinator.user_roles': ['hr'],
+                'grapinator.authenticated': True,
+            },
+        ).get_json()
+        reader_response = self.client.post(
+            self.endpoint,
+            json={'query': introspection_query},
+            environ_overrides={
+                'grapinator.user_roles': ['reader'],
+                'grapinator.authenticated': True,
+            },
+        ).get_json()
+
+        hr_employee_fields = {
+            field['name'] for field in hr_response['data']['employeeType']['fields']
+        }
+        hr_employee_args = {
+            arg['name']
+            for field in hr_response['data']['queryType']['fields']
+            if field['name'] == 'employees'
+            for arg in field['args']
+        }
+        reader_employee_fields = {
+            field['name'] for field in reader_response['data']['employeeType']['fields']
+        }
+        reader_employee_args = {
+            arg['name']
+            for field in reader_response['data']['queryType']['fields']
+            if field['name'] == 'employees'
+            for arg in field['args']
+        }
+        self.assertIn('birth_date', hr_employee_fields)
+        self.assertIn('birth_date', hr_employee_args)
+        self.assertNotIn('birth_date', reader_employee_fields)
+        self.assertNotIn('birth_date', reader_employee_args)
+
 
 if __name__ == '__main__':
     unittest.main()

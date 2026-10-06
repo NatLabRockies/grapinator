@@ -23,13 +23,14 @@ import json
 import logging
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
+from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
 
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
 from grapinator.security import set_request_context
-from grapinator.schema import gql_schema
+from grapinator.schema import get_schema_for_roles, gql_schema
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +182,15 @@ class FixedGraphQLView(GraphQLView):
         allowed_operation_types,
     ):
         set_request_context(db_session(), context)
-        return super().execute_operation(
-            request_adapter, request_data, context, root_value,
-            allowed_operation_types,
+        return execute_sync(
+            schema=get_schema_for_roles(context.get('user_roles', [])),
+            query=request_data.document or request_data.query,
+            root_value=root_value,
+            variable_values=request_data.variables,
+            context_value=context,
+            operation_name=request_data.operation_name,
+            allowed_operation_types=allowed_operation_types,
+            operation_extensions=request_data.extensions,
         )
 
 

@@ -538,8 +538,9 @@ class TestBearerAuthMiddlewareRSA(unittest.TestCase):
 # ===========================================================================
 
 class TestFieldLevelRBAC(unittest.TestCase):
-    def test_protected_fields_are_absent_from_graphql_schema(self):
+    def setUp(self):
         import graphene
+        import grapinator.schema as schema_module
         from grapinator.schema import gql_class_constructor
 
         attrs = [{
@@ -574,21 +575,101 @@ class TestFieldLevelRBAC(unittest.TestCase):
             'auth_roles': ['hr'],
             'deprecation_reason': None,
         }]
-        employee_type = gql_class_constructor(
-            'TestHiddenRBACType', 'db_Employees', attrs, 'employee_id'
+        self.employee_type = gql_class_constructor(
+            'TestRoleAwareType', 'db_Employees', attrs, 'employee_id'
         )
         query_type = type('TestHiddenRBACQuery', (graphene.ObjectType,), {
-            'employee': graphene.Field(employee_type),
+            'employee': graphene.Field(self.employee_type),
+            'employees': graphene.Field(
+                graphene.String, secret_salary=graphene.Float()
+            ),
         })
-        schema = graphene.Schema(query=query_type, auto_camelcase=False)
-        output_fields = schema.graphql_schema.get_type('TestHiddenRBACType').fields
+        self.base_schema = graphene.Schema(query=query_type, auto_camelcase=False)
+        self.schema_module = schema_module
+        self.original_filter_roles = dict(schema_module._QUERY_FILTER_AUTH_ROLES)
+        schema_module._QUERY_FILTER_AUTH_ROLES['employees'] = {
+            'secret_salary': ['hr'],
+        }
+        self.addCleanup(self._restore_schema_globals)
+        self.schema_patcher = patch.object(schema_module, 'gql_schema', self.base_schema)
+        self.schema_patcher.start()
+        self.addCleanup(self.schema_patcher.stop)
+        schema_module._schema_for_role_key.cache_clear()
 
-        self.assertIn('public_name', output_fields)
-        self.assertNotIn('secret_salary', output_fields)
-        self.assertNotIn('calculated_secret', output_fields)
-        result = schema.execute('{ employee { secret_salary } }')
-        self.assertTrue(result.errors)
-        self.assertIn('Cannot query field', result.errors[0].message)
+    def _restore_schema_globals(self):
+        self.schema_module._QUERY_FILTER_AUTH_ROLES.clear()
+        self.schema_module._QUERY_FILTER_AUTH_ROLES.update(self.original_filter_roles)
+        self.schema_module._schema_for_role_key.cache_clear()
+
+    def test_matching_role_sees_output_and_filter_argument(self):
+        role_schema = self.schema_module.get_schema_for_roles(['hr'])
+        employee_fields = role_schema.get_type('TestRoleAwareType').fields
+        filter_args = role_schema.query_type.fields['employees'].args
+
+        self.assertIn('secret_salary', employee_fields)
+        self.assertIn('secret_salary', filter_args)
+
+    def test_nonmatching_roles_cannot_introspect_or_query_protected_field(self):
+        from graphql import parse, validate
+        role_schema = self.schema_module.get_schema_for_roles(['reader'])
+        employee_fields = role_schema.get_type('TestRoleAwareType').fields
+        filter_args = role_schema.query_type.fields['employees'].args
+
+        self.assertIn('public_name', employee_fields)
+        self.assertNotIn('secret_salary', employee_fields)
+        self.assertNotIn('calculated_secret', employee_fields)
+        self.assertNotIn('secret_salary', filter_args)
+
+        document = parse('{ employee { secret_salary } }')
+        errors = validate(role_schema, document)
+        self.assertTrue(any('secret_salary' in error.message for error in errors))
+
+
+class TestRoleSpecificGraphQLSchema(unittest.TestCase):
+    def setUp(self):
+        import grapinator.schema as schema_module
+        self.schema_module = schema_module
+        self.field_roles = patch.dict(
+            schema_module._FIELD_AUTH_ROLES,
+            {'Employees': {'birth_date': ['hr']}},
+        )
+        self.filter_roles = patch.dict(
+            schema_module._QUERY_FILTER_AUTH_ROLES,
+            {'employees': {'birth_date': ['hr']}},
+        )
+        self.field_roles.start()
+        self.filter_roles.start()
+        schema_module._schema_for_role_key.cache_clear()
+        self.addCleanup(self._restore_schema_cache)
+        self.addCleanup(self.filter_roles.stop)
+        self.addCleanup(self.field_roles.stop)
+
+    def _restore_schema_cache(self):
+        self.schema_module._schema_for_role_key.cache_clear()
+
+    def test_only_matching_role_sees_protected_output_and_filter_argument(self):
+        hr_schema = self.schema_module.get_schema_for_roles(['hr'])
+        reader_schema = self.schema_module.get_schema_for_roles(['reader'])
+        anonymous_schema = self.schema_module.get_schema_for_roles([])
+
+        self.assertIn('birth_date', hr_schema.get_type('Employees').fields)
+        self.assertIn('birth_date', hr_schema.query_type.fields['employees'].args)
+        for schema in (reader_schema, anonymous_schema):
+            self.assertNotIn('birth_date', schema.get_type('Employees').fields)
+            self.assertNotIn('birth_date', schema.query_type.fields['employees'].args)
+
+    def test_protected_field_selection_is_validation_error_without_role(self):
+        from graphql import parse, validate
+        hr_schema = self.schema_module.get_schema_for_roles(['hr'])
+        anonymous_schema = self.schema_module.get_schema_for_roles([])
+        document = parse(
+            '{ employees(birth_date: "1983-07-02", matches: "gt", '
+            'sort_by: "birth_date", sort_dir: "asc") '
+            '{ edges { node { birth_date } } } }'
+        )
+        self.assertEqual(validate(hr_schema, document), [])
+        errors = validate(anonymous_schema, document)
+        self.assertTrue(any('birth_date' in error.message for error in errors))
 
 
 # ===========================================================================

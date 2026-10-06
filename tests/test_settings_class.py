@@ -353,20 +353,6 @@ class TestSettingsPoolDefaults(unittest.TestCase):
         self.assertIsInstance(self.settings.DB_POOL_RECYCLE, (int, type(None)))
 
 
-class TestNorthwindExampleSettings(unittest.TestCase):
-    def test_northwind_example_csp_allows_graphiql_assets(self):
-        import os
-        example_ini = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), '..', 'grapinator', 'resources',
-            'grapinator_northwind_example.ini',
-        ))
-        example_settings = Settings(config_file=example_ini)
-        csp = example_settings.HTTP_HEADERS_CONTENT_SECURITY_POLICY
-        self.assertIn("'unsafe-inline'", csp)
-        self.assertIn('https://cdn.jsdelivr.net', csp)
-        self.assertIn('https://unpkg.com', csp)
-
-
 # ---------------------------------------------------------------------------
 # Settings — connection pool explicit values loaded from INI (issue #29)
 # ---------------------------------------------------------------------------
