@@ -270,8 +270,8 @@ class TestSorting(unittest.TestCase):
         ages = [r.age for r in query.all()]
         self.assertEqual(ages, sorted(ages))
 
-    def test_restricted_column_is_not_sortable(self):
-        """Schema metadata allow-lists prevent sorting by protected fields."""
+    def test_hidden_column_is_not_sortable(self):
+        """Schema metadata prevents sorting by permanently restricted fields."""
         from grapinator.schema import (
             MyConnectionField, _RESTRICTED_SORT_FIELDS, _SORTABLE_FIELDS,
         )
@@ -293,8 +293,56 @@ class TestSorting(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'cannot be used for sorting'):
                 MyConnectionField.get_query(_Item, MagicMock(), sort_by='age')
 
-    def test_role_restricted_field_is_not_filterable(self):
-        """Role-restricted column metadata is omitted from GraphQL filter args."""
+    def test_role_restricted_column_is_sortable_for_matching_role(self):
+        from grapinator.schema import MyConnectionField, _SORT_FIELD_AUTH_ROLES, _SORTABLE_FIELDS
+        original_sortable = _SORTABLE_FIELDS.get(_Item.__name__)
+        original_roles = _SORT_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _SORTABLE_FIELDS[_Item.__name__] = {'name', 'age'}
+        _SORT_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _SORTABLE_FIELDS.pop(_Item.__name__, None)
+            if original_sortable is None else _SORTABLE_FIELDS.__setitem__(
+                _Item.__name__, original_sortable
+            )
+        )
+        self.addCleanup(
+            lambda: _SORT_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original_roles is None else _SORT_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original_roles
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['hr']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            query = MyConnectionField.get_query(_Item, info, sort_by='age')
+        self.assertIn('ORDER BY', str(query.statement).upper())
+
+    def test_role_restricted_column_rejected_without_matching_role(self):
+        from grapinator.schema import MyConnectionField, _SORT_FIELD_AUTH_ROLES, _SORTABLE_FIELDS
+        original_sortable = _SORTABLE_FIELDS.get(_Item.__name__)
+        original_roles = _SORT_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _SORTABLE_FIELDS[_Item.__name__] = {'name', 'age'}
+        _SORT_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _SORTABLE_FIELDS.pop(_Item.__name__, None)
+            if original_sortable is None else _SORTABLE_FIELDS.__setitem__(
+                _Item.__name__, original_sortable
+            )
+        )
+        self.addCleanup(
+            lambda: _SORT_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original_roles is None else _SORT_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original_roles
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['reader']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            with self.assertRaisesRegex(ValueError, 'required role'):
+                MyConnectionField.get_query(_Item, info, sort_by='age')
+
+    def test_role_restricted_field_is_exposed_as_runtime_checked_filter_arg(self):
+        """Role-protected filter arguments are available for runtime RBAC checks."""
         from grapinator.schema import _make_gql_query_fields
         import graphene
         columns = [{
@@ -307,7 +355,42 @@ class TestSorting(unittest.TestCase):
             'auth_roles': ['hr'],
         }]
         fields = _make_gql_query_fields(columns)
-        self.assertNotIn('salary', fields)
+        self.assertIn('salary', fields)
+
+    def test_role_restricted_filter_works_for_matching_role(self):
+        from grapinator.schema import MyConnectionField, _FILTER_FIELD_AUTH_ROLES
+        original = _FILTER_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _FILTER_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _FILTER_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original is None else _FILTER_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['hr']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            query = MyConnectionField.get_query(
+                _Item, info, age=25, matches='gt'
+            )
+        self.assertEqual(_ids(query), [1, 3])
+
+    def test_role_restricted_filter_is_rejected_without_matching_role(self):
+        from grapinator.schema import MyConnectionField, _FILTER_FIELD_AUTH_ROLES
+        original = _FILTER_FIELD_AUTH_ROLES.get(_Item.__name__)
+        _FILTER_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
+        self.addCleanup(
+            lambda: _FILTER_FIELD_AUTH_ROLES.pop(_Item.__name__, None)
+            if original is None else _FILTER_FIELD_AUTH_ROLES.__setitem__(
+                _Item.__name__, original
+            )
+        )
+        info = MagicMock()
+        info.context = {'user_roles': ['reader']}
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()) as base_query:
+            with self.assertRaisesRegex(ValueError, 'required role'):
+                MyConnectionField.get_query(_Item, info, age=25, matches='gt')
+        base_query.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 _ENTITY_AUTH_ROLES = {}
 _SORTABLE_FIELDS = {}
 _RESTRICTED_SORT_FIELDS = {}
+_SORT_FIELD_AUTH_ROLES = {}
+_FILTER_FIELD_AUTH_ROLES = {}
 
 
 def _resolve_relationship_list(root, field_name, max_rows=None):
@@ -253,6 +255,18 @@ class MyConnectionField(SQLAlchemyConnectionField):
         sort_by_name = args.pop('sort_by', None)
         sort_dir = args.pop('sort_dir', None)
 
+        filter_field_roles = _FILTER_FIELD_AUTH_ROLES.get(model.__name__, {})
+        ctx = info.context if info.context is not None else {}
+        user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
+        for field, value in args.items():
+            required_roles = filter_field_roles.get(field)
+            if (
+                value is not None
+                and required_roles
+                and not set(user_roles) & set(required_roles)
+            ):
+                raise ValueError('Caller lacks a required role to filter by this field.')
+
         # Build ORDER BY only when a sort column is actually provided/non-None.
         # Validate sort_by_name against actual model attributes to prevent
         # client-controlled getattr on arbitrary/private model members.
@@ -262,6 +276,14 @@ class MyConnectionField(SQLAlchemyConnectionField):
             restricted_sort_fields = _RESTRICTED_SORT_FIELDS.get(model.__name__, set())
             if sort_by_name in restricted_sort_fields:
                 raise ValueError('This field cannot be used for sorting.')
+            required_sort_roles = _SORT_FIELD_AUTH_ROLES.get(
+                model.__name__, {}
+            ).get(sort_by_name)
+            if required_sort_roles:
+                ctx = info.context if info.context is not None else {}
+                user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
+                if not set(user_roles) & set(required_sort_roles):
+                    raise ValueError('Caller lacks a required role to sort by this field.')
             if (
                 sort_by_name.startswith('_')
                 or (sortable_fields is not None and sort_by_name not in sortable_fields)
@@ -383,14 +405,25 @@ for clazz in schema_settings.get_gql_classes():
         if column['isqueryable']
         and not column['ishidden']
         and not column['isresolver']
-        and not column.get('auth_roles')
     }
     _RESTRICTED_SORT_FIELDS[clazz['gql_db_class']] = {
         column['name'] for column in clazz['gql_columns']
         if column['ishidden']
         or column['isresolver']
         or not column['isqueryable']
-        or column.get('auth_roles')
+    }
+    _SORT_FIELD_AUTH_ROLES[clazz['gql_db_class']] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles')
+    }
+    _FILTER_FIELD_AUTH_ROLES[clazz['gql_db_class']] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles')
+        and column['isqueryable']
+        and not column['ishidden']
+        and not column['isresolver']
     }
     _gql_class_count += 1
 logger.info('GraphQL types built: %d', _gql_class_count)
@@ -422,7 +455,6 @@ def _make_gql_query_fields(cols):
             row['isqueryable']
             and row['ishidden'] is False
             and row['isresolver'] is False
-            and not row.get('auth_roles')
         ):
             extra_kwargs = {}
             if row.get('deprecation_reason'):

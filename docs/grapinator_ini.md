@@ -10,7 +10,9 @@ transparently decrypts any values that were encrypted with CryptoConfig (see [En
 
 By default Grapinator loads `grapinator/resources/grapinator.ini` bundled with the installed
 package.  Set the `GRAPINATOR_CONFIG` environment variable to the **absolute path of any ini
-file** to override this at startup without changing any code.
+file** to override this at startup without changing any code. For backward compatibility,
+`/resources/<file>.ini` is also treated as a path relative to the package's `resources/`
+directory when that absolute path does not exist.
 
 Grapinator derives the *resources directory* from the directory that contains the ini file and
 loads all other runtime files from that same directory:

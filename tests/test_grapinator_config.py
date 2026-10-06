@@ -138,5 +138,33 @@ class TestGrapinatorConfigOverride(unittest.TestCase):
         self.assertEqual(mod.settings.GQL_SCHEMA, '/custom/resources/schema.dct')
 
 
+class TestGrapinatorPackageResourcesShorthand(unittest.TestCase):
+    """Legacy /resources paths resolve relative to the installed package."""
+
+    def setUp(self):
+        self._saved = os.environ.pop('GRAPINATOR_CONFIG', None)
+
+    def tearDown(self):
+        if self._saved is not None:
+            os.environ['GRAPINATOR_CONFIG'] = self._saved
+        else:
+            os.environ.pop('GRAPINATOR_CONFIG', None)
+        import grapinator
+        importlib.reload(grapinator)
+
+    def test_resources_ini_path_uses_package_resource_directory(self):
+        mod = _reload_init({'GRAPINATOR_CONFIG': '/resources/grapinator_rbac.ini'})
+        package_dir = path.abspath(path.dirname(mod.__file__))
+        self.assertEqual(
+            mod._config_file,
+            path.join(package_dir, 'resources', 'grapinator_rbac.ini'),
+        )
+        self.assertEqual(mod._resources_dir, path.join(package_dir, 'resources'))
+        self.assertEqual(
+            mod._logging_conf_path,
+            path.join(package_dir, 'resources', 'logging.conf'),
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

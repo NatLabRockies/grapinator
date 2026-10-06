@@ -461,9 +461,9 @@ whether the entity even exists.
 
 `gql_auth_roles` is an optional key inside a field descriptor.  It gates access to a **single
 field**.  The entity query itself is allowed for all callers; only the protected field returns
-`null` for callers who lack the required role. Auth-restricted fields remain introspectable, but
-are excluded from filter arguments and sort keys so row membership or ordering cannot reveal
-their values.
+`null` for callers who lack the required role. Auth-restricted fields remain introspectable and
+may be used as filter arguments or sort keys only by callers whose roles match the field policy.
+Requests by callers without a matching role are rejected before a database query is run.
 
 ```python
 'FIELDS': [
