@@ -480,15 +480,20 @@ class TestRegexLengthCap(unittest.TestCase):
             )
         return mock_query
 
-    def test_regex_is_disabled_by_default(self):
+    def test_regex_remains_enabled_by_default(self):
         from grapinator.schema import MyConnectionField
         from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
         info = MagicMock()
         info.context = {'user_roles': []}
-        with self.assertRaisesRegex(ValueError, 'disabled'):
+        with patch.object(
+            MyConnectionField.__bases__[0], 'get_query', return_value=mock_query
+        ):
             MyConnectionField.get_query(
                 db_Employees, info, matches='regex', first_name='.*'
             )
+        mock_query.filter.assert_called_once()
 
     def test_short_regex_accepted(self):
         """A regex pattern under 200 chars is passed through to the query."""

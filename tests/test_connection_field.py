@@ -335,7 +335,7 @@ class TestCustomArgsSuppressed(unittest.TestCase):
 
 class TestConnectionPageSize(unittest.TestCase):
 
-    def test_missing_page_size_defaults_to_configured_limit(self):
+    def test_unset_page_size_preserves_previous_default(self):
         from grapinator.schema import MyConnectionField
         with patch.object(SQLAlchemyConnectionField, 'connection_resolver',
                              return_value='connection') as base_resolver:
@@ -343,13 +343,23 @@ class TestConnectionPageSize(unittest.TestCase):
                 None, None, _Item, None, MagicMock(), first=None, last=None
             )
         self.assertEqual(result, 'connection')
-        self.assertEqual(base_resolver.call_args.kwargs['first'], 100)
+        self.assertIsNone(base_resolver.call_args.kwargs['first'])
 
-    def test_page_size_above_limit_is_rejected(self):
+    def test_configured_page_size_caps_requests(self):
         from grapinator.schema import MyConnectionField
-        with self.assertRaisesRegex(ValueError, 'between 0 and 100'):
-            MyConnectionField.connection_resolver(
-                None, None, _Item, None, MagicMock(), first=101
+
+        class CappedConnectionField(MyConnectionField):
+            MAX_PAGE_SIZE = 7
+
+        with patch.object(SQLAlchemyConnectionField, 'connection_resolver',
+                          return_value='connection') as base_resolver:
+            CappedConnectionField.connection_resolver(
+                None, None, _Item, None, MagicMock(), first=None, last=None
+            )
+        self.assertEqual(base_resolver.call_args.kwargs['first'], 7)
+        with self.assertRaisesRegex(ValueError, 'between 0 and 7'):
+            CappedConnectionField.connection_resolver(
+                None, None, _Item, None, MagicMock(), first=8
             )
 
 

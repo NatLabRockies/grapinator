@@ -116,19 +116,24 @@ GraphQL schema configuration.
 | Setting | Type | Description |
 |---------|------|-------------|
 | `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
-| `GQL_MAX_QUERY_DEPTH` | integer | Maximum GraphQL selection depth. Default: `12`. |
-| `GQL_MAX_QUERY_COMPLEXITY` | integer | Maximum weighted field-cost budget. List and connection selections are weighted by their configured page bounds. Default: `1000`. |
-| `GQL_MAX_QUERY_FIELDS` | integer | Maximum selected field occurrences, including fragment expansions. Default: `250`. |
-| `GQL_MAX_ALIASES` | integer | Maximum alias occurrences per operation. Default: `20`. |
-| `GQL_MAX_PAGE_SIZE` | integer | Maximum `first`/`last` size and maximum rows returned by a relationship list. Connections default to this size when neither argument is provided. Default: `100`. |
-| `GQL_ALLOW_REGEX` | boolean | Enable database regex filtering. Default: `False`; regex patterns can still have pathological execution time, so only enable for trusted use cases. |
+| `GQL_MAX_QUERY_DEPTH` | integer | Optional maximum GraphQL selection depth. Unset by default to preserve previous behavior. |
+| `GQL_MAX_INTROSPECTION_DEPTH` | integer | Optional depth limit for operations containing only standard introspection root fields. Unset by default. |
+| `GQL_MAX_QUERY_COMPLEXITY` | integer | Optional weighted field-cost budget. List and connection selections are weighted by their configured page bounds. Unset by default. |
+| `GQL_MAX_INTROSPECTION_COMPLEXITY` | integer | Optional separate complexity budget for schema introspection. Unset by default. |
+| `GQL_MAX_QUERY_FIELDS` | integer | Optional maximum selected field occurrences, including fragment expansions. Unset by default. |
+| `GQL_MAX_ALIASES` | integer | Optional maximum alias occurrences per operation. Unset by default. |
+| `GQL_MAX_PAGE_SIZE` | integer | Optional maximum `first`/`last` size and rows returned by a relationship list. Unset by default; no implicit connection page size is added. |
+| `GQL_ALLOW_REGEX` | boolean | Enable database regex filtering. Default: `True` for compatibility; set to `False` to disable. Regex patterns can still have pathological execution time. |
 | `GQL_PERSISTED_QUERIES_FILE` | path | Optional JSON object mapping SHA-256 query hashes to query documents. When configured, it becomes a strict operation allowlist and accepts standard persisted-query hash requests. Relative paths are resolved beside the active ini file. |
 
 **Example:**
 ```ini
 [GRAPHENE]
 GQL_SCHEMA = schema.dct
+# Leave budget settings unset to preserve prior unbounded query behavior.
 # GQL_MAX_QUERY_DEPTH = 12
+# GQL_MAX_INTROSPECTION_DEPTH = 20
+# GQL_MAX_INTROSPECTION_COMPLEXITY = 5000
 # GQL_MAX_QUERY_COMPLEXITY = 1000
 # GQL_MAX_QUERY_FIELDS = 250
 # GQL_MAX_ALIASES = 20

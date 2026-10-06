@@ -12,10 +12,11 @@ All notable changes to Grapinator
 - **Prevent restricted-field inference** — Role-restricted fields are no longer
   available as filter arguments or sort keys; hidden and non-queryable fields
   are also excluded from sorting.
-- **Bound GraphQL operations** — Configurable depth, weighted complexity, field,
-  alias, and page-size limits are enforced before execution. Relationship lists
-  are capped in SQL. Regex filtering is disabled by default. An optional static
-  persisted-query hash map can restrict execution to approved operations.
+- **Bound GraphQL operations** — Optional depth, weighted complexity, field,
+  alias, and page-size limits can be enabled before execution. These budgets are
+  unset by default to preserve prior behavior. Regex filtering remains enabled
+  by default for compatibility. An optional static persisted-query hash map can
+  restrict execution to approved operations.
 
 ---
 

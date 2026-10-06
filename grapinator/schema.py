@@ -47,14 +47,15 @@ def _resolve_relationship_list(root, field_name, max_rows=None):
     relationship_property = getattr(relationship_attr, 'property', None)
     if not hasattr(relationship_property, 'mapper'):
         value = getattr(root, field_name, None)
-        return list(value or [])[:max_rows]
+        rows = list(value or [])
+        return rows if max_rows is None else rows[:max_rows]
 
     target_model = relationship_property.mapper.class_
     query = db_session.query(target_model).filter(
         with_parent(root, relationship_attr)
     )
     if relationship_property.uselist:
-        return query.limit(max_rows).all()
+        return query.all() if max_rows is None else query.limit(max_rows).all()
     return query.first()
 
 
@@ -205,18 +206,22 @@ class MyConnectionField(SQLAlchemyConnectionField):
     # Standard Relay pagination arguments that must not be treated as
     # column filters by the custom filtering logic below.
     RELAY_ARGS = ['first', 'last', 'before', 'after']
+    MAX_PAGE_SIZE = None
 
     @classmethod
     def connection_resolver(cls, resolver, connection_type, model, root, info, **args):
-        max_page_size = settings.GQL_MAX_PAGE_SIZE
-        for argument in ('first', 'last'):
-            page_size = args.get(argument)
-            if page_size is not None and (page_size < 0 or page_size > max_page_size):
-                raise ValueError(
-                    f'{argument} must be between 0 and {max_page_size}.'
-                )
-        if args.get('first') is None and args.get('last') is None:
-            args['first'] = max_page_size
+        max_page_size = cls.MAX_PAGE_SIZE
+        if max_page_size is None:
+            max_page_size = settings.GQL_MAX_PAGE_SIZE
+        if max_page_size is not None:
+            for argument in ('first', 'last'):
+                page_size = args.get(argument)
+                if page_size is not None and (page_size < 0 or page_size > max_page_size):
+                    raise ValueError(
+                        f'{argument} must be between 0 and {max_page_size}.'
+                    )
+            if args.get('first') is None and args.get('last') is None:
+                args['first'] = max_page_size
         return super(MyConnectionField, cls).connection_resolver(
             resolver, connection_type, model, root, info, **args
         )

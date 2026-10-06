@@ -452,35 +452,14 @@ class TestGraphQLRequestLimits(unittest.TestCase):
     def _post(self, query):
         return self.client.post(self.endpoint, json={'query': query}).get_json()
 
-    def test_depth_limit_rejects_before_resolving_fields(self):
-        nested_type = 'name'
-        for _ in range(10):
-            nested_type = f'ofType {{ {nested_type} }}'
-        query = f'{{ __schema {{ types {{ fields {{ type {{ {nested_type} }} }} }} }} }}'
-        result = self._post(query)
-        self.assertIn('depth', result['errors'][0]['message'].lower())
-
-    def test_alias_limit_rejects_operation(self):
-        aliases = ' '.join(f'field{index}: __typename' for index in range(21))
-        result = self._post(f'{{ {aliases} }}')
-        self.assertIn('alias', result['errors'][0]['message'].lower())
-
-    def test_field_limit_rejects_operation(self):
-        fields = ' '.join('__typename' for _ in range(251))
-        result = self._post(f'{{ {fields} }}')
-        self.assertIn('field count', result['errors'][0]['message'].lower())
-
-    def test_connection_page_over_limit_is_rejected(self):
-        result = self._post(
-            '{ employees(first: 101) { edges { node { employee_id } } } }'
-        )
-        self.assertIn('between 0 and 100', result['errors'][0]['message'])
-
-    def test_weighted_complexity_rejects_large_connection_selection(self):
-        result = self._post(
-            '{ employees(first: 100) { edges { node { employee_id first_name } } } }'
-        )
-        self.assertIn('complexity', result['errors'][0]['message'].lower())
+    def test_standard_introspection_query_fetches_schema(self):
+        from graphql import get_introspection_query
+        response = self.client.post(self.endpoint, json={
+            'query': get_introspection_query(descriptions=True),
+        })
+        body = response.get_json()
+        self.assertNotIn('errors', body)
+        self.assertEqual(body['data']['__schema']['queryType']['name'], 'Query')
 
     def test_persisted_query_hash_resolves_without_query_text(self):
         query = '{ __typename }'

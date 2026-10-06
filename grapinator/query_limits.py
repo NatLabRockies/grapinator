@@ -84,6 +84,9 @@ class QueryLimitsRule(ValidationRule):
 
         for operation in document.definitions:
             if isinstance(operation, OperationDefinitionNode):
+                is_introspection = self._is_introspection_operation(
+                    operation.selection_set
+                )
                 field_count, alias_count, depth, complexity = self._measure(
                     operation.selection_set,
                     fragments,
@@ -91,23 +94,31 @@ class QueryLimitsRule(ValidationRule):
                     parent_type=self._root_type(operation.operation.value),
                     max_field_count=self._limit('GQL_MAX_QUERY_FIELDS'),
                 )
-                max_depth = self._limit('GQL_MAX_QUERY_DEPTH')
-                if depth > max_depth:
+                max_depth = (
+                    settings.GQL_MAX_INTROSPECTION_DEPTH
+                    if is_introspection
+                    else self._limit('GQL_MAX_QUERY_DEPTH')
+                )
+                if max_depth is not None and depth > max_depth:
                     self.report_error(GraphQLError(
                         f'Query depth exceeds the limit of {max_depth}.'
                     ))
                 max_fields = self._limit('GQL_MAX_QUERY_FIELDS')
-                if field_count > max_fields:
+                if max_fields is not None and field_count > max_fields:
                     self.report_error(GraphQLError(
                         f'Query field count exceeds the limit of {max_fields}.'
                     ))
                 max_aliases = self._limit('GQL_MAX_ALIASES')
-                if alias_count > max_aliases:
+                if max_aliases is not None and alias_count > max_aliases:
                     self.report_error(GraphQLError(
                         f'Query alias count exceeds the limit of {max_aliases}.'
                     ))
-                max_complexity = self._limit('GQL_MAX_QUERY_COMPLEXITY')
-                if complexity > max_complexity:
+                max_complexity = (
+                    settings.GQL_MAX_INTROSPECTION_COMPLEXITY
+                    if is_introspection
+                    else self._limit('GQL_MAX_QUERY_COMPLEXITY')
+                )
+                if max_complexity is not None and complexity > max_complexity:
                     self.report_error(GraphQLError(
                         'Estimated query complexity exceeds the configured limit '
                         f'of {max_complexity}.'
@@ -119,6 +130,14 @@ class QueryLimitsRule(ValidationRule):
             'mutation': self.context.schema.mutation_type,
             'subscription': self.context.schema.subscription_type,
         }.get(operation)
+
+    @staticmethod
+    def _is_introspection_operation(selection_set):
+        return bool(selection_set.selections) and all(
+            isinstance(selection, FieldNode)
+            and selection.name.value in ('__schema', '__type', '__typename')
+            for selection in selection_set.selections
+        )
 
     @staticmethod
     def _measure(
@@ -143,11 +162,11 @@ class QueryLimitsRule(ValidationRule):
         complexity = 0
 
         for selection in selection_set.selections:
-            if traversal_budget[0] > max_field_count:
+            if max_field_count is not None and traversal_budget[0] > max_field_count:
                 break
             if isinstance(selection, FieldNode):
                 traversal_budget[0] += 1
-                if traversal_budget[0] > max_field_count:
+                if max_field_count is not None and traversal_budget[0] > max_field_count:
                     field_count = max_field_count + 1
                     break
                 field_depth = depth + 1
@@ -178,7 +197,12 @@ class QueryLimitsRule(ValidationRule):
                             selection.arguments
                         )
                         child_multiplier *= child_connection_bound
-                    elif is_list_type(unwrapped_type) and connection_bound is None:
+                    elif (
+                        is_list_type(unwrapped_type)
+                        and connection_bound is None
+                        and not getattr(named_type, 'name', '').startswith('__')
+                        and settings.GQL_MAX_PAGE_SIZE is not None
+                    ):
                         child_multiplier *= settings.GQL_MAX_PAGE_SIZE
                     elif is_list_type(unwrapped_type):
                         child_connection_bound = connection_bound
@@ -248,6 +272,11 @@ class QueryLimitsRule(ValidationRule):
         for argument in arguments:
             if argument.name.value in ('first', 'last'):
                 if isinstance(argument.value, IntValueNode):
-                    page_size = min(int(argument.value.value), page_size)
+                    requested_size = int(argument.value.value)
+                    page_size = (
+                        requested_size
+                        if page_size is None
+                        else min(requested_size, page_size)
+                    )
                 break
-        return max(1, page_size)
+        return max(1, page_size or 1)
