@@ -108,6 +108,7 @@ _MINIMAL_SCHEMA = [
         'DB_TABLE_NAME': 'TestItems',
         'DB_TABLE_PK': 'ItemID',
         'DB_DEFAULT_SORT_COL': 'ItemID',
+        'ROW_AUTH_CLAIMS': {'organization_id': 'organization.id'},
         'FIELDS': [
             {
                 'gql_col_name': 'item_id',
@@ -289,6 +290,12 @@ class TestSchemaSettingsGqlClasses(unittest.TestCase):
         cls_def = self.ss.get_gql_classes()[0]
         self.assertEqual(cls_def['gql_db_default_sort_col'], 'ItemID')
 
+    def test_row_auth_claims_are_preserved(self):
+        self.assertEqual(
+            self.ss.get_gql_classes()[0]['gql_row_auth_claims'],
+            {'organization_id': 'organization.id'},
+        )
+
     def test_gql_column_optional_type_args_defaults_to_none(self):
         """gql_of_type absent → type_args defaults to None."""
         cols = self.ss.get_gql_classes()[0]['gql_columns']
@@ -344,6 +351,34 @@ class TestSettingsPoolDefaults(unittest.TestCase):
 
     def test_pool_recycle_is_none_or_int(self):
         self.assertIsInstance(self.settings.DB_POOL_RECYCLE, (int, type(None)))
+
+
+class TestGraphQLSettings(unittest.TestCase):
+
+    def test_default_limits_and_regex_policy(self):
+        s = _make_mock_settings({})
+        self.assertEqual(s.GQL_MAX_QUERY_DEPTH, 12)
+        self.assertEqual(s.GQL_MAX_QUERY_COMPLEXITY, 1000)
+        self.assertEqual(s.GQL_MAX_QUERY_FIELDS, 250)
+        self.assertEqual(s.GQL_MAX_ALIASES, 20)
+        self.assertEqual(s.GQL_MAX_PAGE_SIZE, 100)
+        self.assertFalse(s.GQL_ALLOW_REGEX)
+
+    def test_graphql_limits_and_persisted_query_path_load(self):
+        s = _make_mock_settings({
+            ('GRAPHENE', 'GQL_MAX_QUERY_DEPTH'): '8',
+            ('GRAPHENE', 'GQL_MAX_PAGE_SIZE'): '25',
+            ('GRAPHENE', 'GQL_ALLOW_REGEX'): 'True',
+            ('GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'): 'queries.json',
+        })
+        self.assertEqual(s.GQL_MAX_QUERY_DEPTH, 8)
+        self.assertEqual(s.GQL_MAX_PAGE_SIZE, 25)
+        self.assertTrue(s.GQL_ALLOW_REGEX)
+        self.assertEqual(s.GQL_PERSISTED_QUERIES_FILE, 'queries.json')
+
+    def test_nonpositive_limits_are_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'GQL_MAX_ALIASES'):
+            _make_mock_settings({('GRAPHENE', 'GQL_MAX_ALIASES'): '0'})
 
 
 # ---------------------------------------------------------------------------

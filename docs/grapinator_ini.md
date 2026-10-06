@@ -116,11 +116,25 @@ GraphQL schema configuration.
 | Setting | Type | Description |
 |---------|------|-------------|
 | `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
+| `GQL_MAX_QUERY_DEPTH` | integer | Maximum GraphQL selection depth. Default: `12`. |
+| `GQL_MAX_QUERY_COMPLEXITY` | integer | Maximum weighted field-cost budget. List and connection selections are weighted by their configured page bounds. Default: `1000`. |
+| `GQL_MAX_QUERY_FIELDS` | integer | Maximum selected field occurrences, including fragment expansions. Default: `250`. |
+| `GQL_MAX_ALIASES` | integer | Maximum alias occurrences per operation. Default: `20`. |
+| `GQL_MAX_PAGE_SIZE` | integer | Maximum `first`/`last` size and maximum rows returned by a relationship list. Connections default to this size when neither argument is provided. Default: `100`. |
+| `GQL_ALLOW_REGEX` | boolean | Enable database regex filtering. Default: `False`; regex patterns can still have pathological execution time, so only enable for trusted use cases. |
+| `GQL_PERSISTED_QUERIES_FILE` | path | Optional JSON object mapping SHA-256 query hashes to query documents. When configured, it becomes a strict operation allowlist and accepts standard persisted-query hash requests. Relative paths are resolved beside the active ini file. |
 
 **Example:**
 ```ini
 [GRAPHENE]
 GQL_SCHEMA = schema.dct
+# GQL_MAX_QUERY_DEPTH = 12
+# GQL_MAX_QUERY_COMPLEXITY = 1000
+# GQL_MAX_QUERY_FIELDS = 250
+# GQL_MAX_ALIASES = 20
+# GQL_MAX_PAGE_SIZE = 100
+# GQL_ALLOW_REGEX = False
+# GQL_PERSISTED_QUERIES_FILE = persisted_queries.json
 ```
 
 ---

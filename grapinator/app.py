@@ -23,14 +23,23 @@ import json
 import logging
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
+from graphql import ExecutionResult, GraphQLError
+from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
 
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
+from grapinator.security import set_request_context
 from grapinator.schema import gql_schema
+from grapinator.query_limits import (
+    QueryLimitsRule,
+    load_persisted_queries,
+    resolve_persisted_query,
+)
 
 logger = logging.getLogger(__name__)
+_PERSISTED_QUERIES = load_persisted_queries(settings.GQL_PERSISTED_QUERIES_FILE)
 
 
 class FixedGraphQLView(GraphQLView):
@@ -156,23 +165,48 @@ class FixedGraphQLView(GraphQLView):
         """
         Return the GraphQL execution context dict used by resolvers.
 
-        Overrides the default implementation to expose ``user_roles`` and
-        ``authenticated`` (populated by
+        Overrides the default implementation to expose ``user_roles``,
+        ``user_claims``, and ``authenticated`` (populated by
         :class:`~grapinator.auth.BearerAuthMiddleware` via
         :func:`_load_auth_state`) so that field- and entity-level RBAC checks
         in ``schema.py`` can gate access without coupling to the WSGI environ.
 
         :param request:  The current Flask ``Request`` object.
         :param response: The current Flask ``Response`` object.
-        :returns: Dict with keys ``request``, ``response``, ``user_roles``,
-                  and ``authenticated``.
+        :returns: Dict with request/response, validated roles and claims,
+              and the authentication status.
         """
         return {
             'request': request,
             'response': response,
             'user_roles': getattr(g, 'user_roles', []),
+            'user_claims': getattr(g, 'user_claims', {}),
             'authenticated': getattr(g, 'authenticated', False),
         }
+
+    def execute_operation(
+        self, request_adapter, request_data, context, root_value,
+        allowed_operation_types,
+    ):
+        set_request_context(db_session(), context)
+        query = request_data.document or request_data.query
+        try:
+            query = resolve_persisted_query(
+                query, request_data.extensions, _PERSISTED_QUERIES
+            )
+        except GraphQLError as error:
+            return ExecutionResult(data=None, errors=[error])
+        return execute_sync(
+            schema=self.schema,
+            query=query,
+            root_value=root_value,
+            variable_values=request_data.variables,
+            context_value=context,
+            operation_name=request_data.operation_name,
+            allowed_operation_types=allowed_operation_types,
+            operation_extensions=request_data.extensions,
+            validation_rules=(QueryLimitsRule,),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -197,12 +231,16 @@ def _load_auth_state():
 
     ``g.user_roles``     — list of role strings from the validated token;
                            empty list for unauthenticated requests.
+    ``g.user_claims``    — decoded JWT claim mapping;
+                           empty dict for unauthenticated requests.
     ``g.authenticated``  — ``True`` when a valid bearer token was presented.
 
     These values are consumed by :meth:`FixedGraphQLView.get_context` and are
     available to any other Flask extension or view that needs auth information.
     """
     g.user_roles = flask_request.environ.get('grapinator.user_roles', [])
+    g.user_claims = flask_request.environ.get('grapinator.user_claims', {})
+    g.user_claims = flask_request.environ.get('grapinator.user_claims', {})
     g.authenticated = flask_request.environ.get('grapinator.authenticated', False)
     logger.debug(
         'Auth state: authenticated=%s roles=%s path=%s',

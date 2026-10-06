@@ -153,6 +153,13 @@ class Settings(object):
 
     # Graphene schema file path
     GQL_SCHEMA = None
+    GQL_MAX_QUERY_DEPTH = 12
+    GQL_MAX_QUERY_COMPLEXITY = 1000
+    GQL_MAX_QUERY_FIELDS = 250
+    GQL_MAX_ALIASES = 20
+    GQL_MAX_PAGE_SIZE = 100
+    GQL_ALLOW_REGEX = False
+    GQL_PERSISTED_QUERIES_FILE = None
 
     # Authentication / JWT settings (all optional; default to auth off)
     AUTH_MODE = 'off'              # 'off' | 'mixed' | 'required'
@@ -412,6 +419,24 @@ class Settings(object):
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
+            for _option in (
+                'GQL_MAX_QUERY_DEPTH', 'GQL_MAX_QUERY_COMPLEXITY',
+                'GQL_MAX_QUERY_FIELDS', 'GQL_MAX_ALIASES', 'GQL_MAX_PAGE_SIZE',
+            ):
+                if properties.has_option('GRAPHENE', _option):
+                    setattr(self, _option, properties.getint('GRAPHENE', _option))
+            if properties.has_option('GRAPHENE', 'GQL_ALLOW_REGEX'):
+                self.GQL_ALLOW_REGEX = properties.getboolean('GRAPHENE', 'GQL_ALLOW_REGEX')
+            if properties.has_option('GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'):
+                self.GQL_PERSISTED_QUERIES_FILE = properties.get(
+                    'GRAPHENE', 'GQL_PERSISTED_QUERIES_FILE'
+                )
+            for _option in (
+                'GQL_MAX_QUERY_DEPTH', 'GQL_MAX_QUERY_COMPLEXITY',
+                'GQL_MAX_QUERY_FIELDS', 'GQL_MAX_ALIASES', 'GQL_MAX_PAGE_SIZE',
+            ):
+                if getattr(self, _option) <= 0:
+                    raise RuntimeError(f'{_option} must be a positive integer.')
 
             # load AUTH section (entirely optional — defaults are set above)
             if properties.has_section('AUTH'):
@@ -677,6 +702,8 @@ class SchemaSettings(object):
                 ,'gql_db_default_sort_col': row['DB_DEFAULT_SORT_COL']
                 # AUTH_ROLES: entity-level role list; absent/None means public (no restriction)
                 ,'gql_entity_auth_roles': row['AUTH_ROLES'] if 'AUTH_ROLES' in row and row['AUTH_ROLES'] else None
+                # ROW_AUTH_CLAIMS maps ORM column names to dotted JWT claim paths.
+                ,'gql_row_auth_claims': row.get('ROW_AUTH_CLAIMS', {})
                 }
             gql_classes.append(gql_class)
         return gql_classes

@@ -74,6 +74,8 @@ def _base_query():
 def _run(args):
     """Call MyConnectionField.get_query with the parent's get_query mocked to
     return a plain _Item query, then return the final filtered/sorted query."""
+    if args.get('matches') in ('regex', 're'):
+        args['_allow_regex'] = True
     with patch.object(SQLAlchemyConnectionField, 'get_query',
                       return_value=_base_query()):
         return MyConnectionField.get_query(_Item, MagicMock(), **args)
@@ -268,6 +270,45 @@ class TestSorting(unittest.TestCase):
         ages = [r.age for r in query.all()]
         self.assertEqual(ages, sorted(ages))
 
+    def test_restricted_column_is_not_sortable(self):
+        """Schema metadata allow-lists prevent sorting by protected fields."""
+        from grapinator.schema import (
+            MyConnectionField, _RESTRICTED_SORT_FIELDS, _SORTABLE_FIELDS,
+        )
+        original = _SORTABLE_FIELDS.get(_Item.__name__)
+        original_restricted = _RESTRICTED_SORT_FIELDS.get(_Item.__name__)
+        _SORTABLE_FIELDS[_Item.__name__] = {'name'}
+        _RESTRICTED_SORT_FIELDS[_Item.__name__] = {'age'}
+        self.addCleanup(
+            lambda: _SORTABLE_FIELDS.pop(_Item.__name__, None)
+            if original is None else _SORTABLE_FIELDS.__setitem__(_Item.__name__, original)
+        )
+        self.addCleanup(
+            lambda: _RESTRICTED_SORT_FIELDS.pop(_Item.__name__, None)
+            if original_restricted is None else _RESTRICTED_SORT_FIELDS.__setitem__(
+                _Item.__name__, original_restricted
+            )
+        )
+        with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
+            with self.assertRaisesRegex(ValueError, 'cannot be used for sorting'):
+                MyConnectionField.get_query(_Item, MagicMock(), sort_by='age')
+
+    def test_role_restricted_field_is_not_filterable(self):
+        """Role-restricted column metadata is omitted from GraphQL filter args."""
+        from grapinator.schema import _make_gql_query_fields
+        import graphene
+        columns = [{
+            'name': 'salary',
+            'type': graphene.Int,
+            'type_args': None,
+            'isqueryable': True,
+            'ishidden': False,
+            'isresolver': False,
+            'auth_roles': ['hr'],
+        }]
+        fields = _make_gql_query_fields(columns)
+        self.assertNotIn('salary', fields)
+
 
 # ---------------------------------------------------------------------------
 # Custom args (matches/logic/sort_by/sort_dir) are NOT treated as field
@@ -290,6 +331,26 @@ class TestCustomArgsSuppressed(unittest.TestCase):
     def test_sort_by_arg_not_treated_as_field_filter(self):
         result = _ids(_run({'sort_by': 'age', 'sort_dir': 'asc'}))
         self.assertEqual(len(result), 4)
+
+
+class TestConnectionPageSize(unittest.TestCase):
+
+    def test_missing_page_size_defaults_to_configured_limit(self):
+        from grapinator.schema import MyConnectionField
+        with patch.object(SQLAlchemyConnectionField, 'connection_resolver',
+                             return_value='connection') as base_resolver:
+            result = MyConnectionField.connection_resolver(
+                None, None, _Item, None, MagicMock(), first=None, last=None
+            )
+        self.assertEqual(result, 'connection')
+        self.assertEqual(base_resolver.call_args.kwargs['first'], 100)
+
+    def test_page_size_above_limit_is_rejected(self):
+        from grapinator.schema import MyConnectionField
+        with self.assertRaisesRegex(ValueError, 'between 0 and 100'):
+            MyConnectionField.connection_resolver(
+                None, None, _Item, None, MagicMock(), first=101
+            )
 
 
 if __name__ == '__main__':

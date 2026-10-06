@@ -14,6 +14,7 @@ import os
 os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 
 import json
+import hashlib
 import html
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -440,6 +441,63 @@ class TestFixedGraphQLViewNoHtmlEscaping(unittest.TestCase):
         content = self._render_raw(variables=variables,
                                    template='{{ variables }}')
         self.assertEqual(json.loads(content), variables)
+
+
+class TestGraphQLRequestLimits(unittest.TestCase):
+
+    def setUp(self):
+        self.client = app.test_client()
+        self.endpoint = settings.FLASK_API_ENDPOINT
+
+    def _post(self, query):
+        return self.client.post(self.endpoint, json={'query': query}).get_json()
+
+    def test_depth_limit_rejects_before_resolving_fields(self):
+        nested_type = 'name'
+        for _ in range(10):
+            nested_type = f'ofType {{ {nested_type} }}'
+        query = f'{{ __schema {{ types {{ fields {{ type {{ {nested_type} }} }} }} }} }}'
+        result = self._post(query)
+        self.assertIn('depth', result['errors'][0]['message'].lower())
+
+    def test_alias_limit_rejects_operation(self):
+        aliases = ' '.join(f'field{index}: __typename' for index in range(21))
+        result = self._post(f'{{ {aliases} }}')
+        self.assertIn('alias', result['errors'][0]['message'].lower())
+
+    def test_field_limit_rejects_operation(self):
+        fields = ' '.join('__typename' for _ in range(251))
+        result = self._post(f'{{ {fields} }}')
+        self.assertIn('field count', result['errors'][0]['message'].lower())
+
+    def test_connection_page_over_limit_is_rejected(self):
+        result = self._post(
+            '{ employees(first: 101) { edges { node { employee_id } } } }'
+        )
+        self.assertIn('between 0 and 100', result['errors'][0]['message'])
+
+    def test_weighted_complexity_rejects_large_connection_selection(self):
+        result = self._post(
+            '{ employees(first: 100) { edges { node { employee_id first_name } } } }'
+        )
+        self.assertIn('complexity', result['errors'][0]['message'].lower())
+
+    def test_persisted_query_hash_resolves_without_query_text(self):
+        query = '{ __typename }'
+        query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()
+        with patch('grapinator.app._PERSISTED_QUERIES', {query_hash: query}):
+            response = self.client.post(self.endpoint, json={
+                'extensions': {
+                    'persistedQuery': {'version': 1, 'sha256Hash': query_hash}
+                }
+            })
+        self.assertEqual(response.get_json()['data'], {'__typename': 'Query'})
+
+    def test_persisted_query_mode_rejects_unlisted_documents(self):
+        query = '{ __typename }'
+        with patch('grapinator.app._PERSISTED_QUERIES', {'0' * 64: query}):
+            result = self._post(query)
+        self.assertIn('allowlist', result['errors'][0]['message'])
 
 
 if __name__ == '__main__':

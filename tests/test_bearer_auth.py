@@ -321,6 +321,14 @@ class TestBearerAuthMiddlewareMixedMode(unittest.TestCase):
         self.assertIn('admin', self.captured.get('grapinator.user_roles', []))
         self.assertIn('reader', self.captured.get('grapinator.user_roles', []))
 
+    def test_valid_token_sets_claims_in_environ(self):
+        claims = {'organization': {'id': 'north'}, 'sub': 'user-1'}
+        token = _make_token(roles=['reader'], extra_claims=claims)
+        environ = _make_environ(auth_header=f'Bearer {token}')
+        self._call(environ)
+        self.assertEqual(self.captured.get('grapinator.user_claims', {}).get('organization'),
+                         {'id': 'north'})
+
     def test_valid_token_sets_authenticated_true(self):
         token = _make_token(roles=['admin'])
         environ = _make_environ(auth_header=f'Bearer {token}')
@@ -625,6 +633,28 @@ class TestFieldLevelRBAC(unittest.TestCase):
         info = self._make_info(roles=[])
         result = resolver(root, info)
         self.assertIsNone(result)
+
+    def test_resolver_backed_field_enforces_roles(self):
+        from grapinator.schema import gql_class_constructor
+
+        resolver = MagicMock(return_value=42)
+        attrs = [{
+            'name': 'sensitive_value',
+            'type': __import__('graphene').Int,
+            'desc': 'Protected calculated field',
+            'type_args': None,
+            'isqueryable': True,
+            'ishidden': False,
+            'isresolver': True,
+            'resolver_func': resolver,
+            'auth_roles': ['hr'],
+            'deprecation_reason': None,
+        }]
+        cls = gql_class_constructor('TestCalculatedHRType', 'db_Employees', attrs, 'employee_id')
+        protected_resolver = getattr(cls, 'resolve_sensitive_value')
+        self.assertIsNone(protected_resolver(MagicMock(), self._make_info(['reader'])))
+        self.assertEqual(protected_resolver(MagicMock(), self._make_info(['hr'])), 42)
+        resolver.assert_called_once()
 
     def test_multi_role_access_any_matching_role_sufficient(self):
         """A field with ['hr', 'finance'] is accessible by either role."""

@@ -12,8 +12,10 @@ lives in this module — all IdP specifics are externalized to configuration.
 Three auth modes
 ~~~~~~~~~~~~~~~~
 **off** (default)
-    Middleware is a no-op; every request passes through untouched.
-    Existing deployments are completely unaffected.
+    Middleware does not validate tokens; every request passes through with an
+    empty role set and claims mapping. Public data remains available, while
+    role- and claim-restricted data fails closed. Deployments without schema
+    authorization policies are unchanged.
 
 **mixed**
     Requests without a token are passed through as *unauthenticated*
@@ -264,6 +266,7 @@ class BearerAuthMiddleware:
         # Auth is disabled — pass through immediately without touching environ.
         if self.mode == 'off':
             environ.setdefault('grapinator.user_roles', [])
+            environ.setdefault('grapinator.user_claims', {})
             environ.setdefault('grapinator.authenticated', False)
             return self.app(environ, start_response)
 
@@ -271,6 +274,7 @@ class BearerAuthMiddleware:
         if environ.get('REQUEST_METHOD') == 'OPTIONS':
             logger.debug('Auth: OPTIONS preflight bypass')
             environ.setdefault('grapinator.user_roles', [])
+            environ.setdefault('grapinator.user_claims', {})
             environ.setdefault('grapinator.authenticated', False)
             return self.app(environ, start_response)
 
@@ -278,6 +282,7 @@ class BearerAuthMiddleware:
         if self._is_graphiql_ide_request(environ) and self.graphiql_access == 'open':
             logger.debug('Auth: GraphiQL IDE open-access bypass')
             environ['grapinator.user_roles'] = []
+            environ['grapinator.user_claims'] = {}
             environ['grapinator.authenticated'] = False
             return self.app(environ, start_response)
 
@@ -288,6 +293,7 @@ class BearerAuthMiddleware:
                 # No token in mixed mode → unauthenticated passthrough.
                 logger.debug('Auth: no token in mixed mode — unauthenticated passthrough')
                 environ['grapinator.user_roles'] = []
+                environ['grapinator.user_claims'] = {}
                 environ['grapinator.authenticated'] = False
                 return self.app(environ, start_response)
             else:
@@ -318,6 +324,7 @@ class BearerAuthMiddleware:
 
         roles = _get_roles_from_payload(payload, self.roles_claim)
         environ['grapinator.user_roles'] = roles
+        environ['grapinator.user_claims'] = payload
         environ['grapinator.authenticated'] = True
         logger.debug('Auth: token valid, roles=%s', roles)
         return self.app(environ, start_response)

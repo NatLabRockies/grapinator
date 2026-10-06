@@ -2,6 +2,23 @@
 
 All notable changes to Grapinator
 
+## [2.1.14] - 2026-10-06
+
+### Security
+
+- **Enforce entity and row authorization on every ORM load** (issue #40) — Entity
+  role and optional `ROW_AUTH_CLAIMS` predicates now apply to root queries,
+  relationship loads, and Relay node lookups. Missing row claims fail closed.
+- **Prevent restricted-field inference** — Role-restricted fields are no longer
+  available as filter arguments or sort keys; hidden and non-queryable fields
+  are also excluded from sorting.
+- **Bound GraphQL operations** — Configurable depth, weighted complexity, field,
+  alias, and page-size limits are enforced before execution. Relationship lists
+  are capped in SQL. Regex filtering is disabled by default. An optional static
+  persisted-query hash map can restrict execution to approved operations.
+
+---
+
 ## [2.1.13] - 2026-07-14
 
 ### Fixed

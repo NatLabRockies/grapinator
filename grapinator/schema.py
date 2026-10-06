@@ -18,13 +18,15 @@ same query capabilities without any per-entity boilerplate.
 """
 
 from sqlalchemy import and_, or_, desc, asc, false as sql_false
+from sqlalchemy.orm import with_parent
 import graphene
 from graphene import relay
 from graphene_sqlalchemy import SQLAlchemyObjectType, SQLAlchemyConnectionField
 import datetime
 import logging
-from grapinator import schema_settings
+from grapinator import settings, schema_settings
 from grapinator.model import *
+from grapinator.security import register_model_policy
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,42 @@ logger = logging.getLogger(__name__)
 # the list of roles required to query that entity.  Populated at schema-build
 # time; used by MyConnectionField.get_query() for entity-level RBAC.
 _ENTITY_AUTH_ROLES = {}
+_SORTABLE_FIELDS = {}
+_RESTRICTED_SORT_FIELDS = {}
+
+
+def _resolve_relationship_list(root, field_name, max_rows=None):
+    """Resolve a mapped relationship with a SQL-level row cap."""
+    if root is None:
+        return []
+    max_rows = settings.GQL_MAX_PAGE_SIZE if max_rows is None else max_rows
+    relationship_attr = getattr(type(root), field_name, None)
+    relationship_property = getattr(relationship_attr, 'property', None)
+    if not hasattr(relationship_property, 'mapper'):
+        value = getattr(root, field_name, None)
+        return list(value or [])[:max_rows]
+
+    target_model = relationship_property.mapper.class_
+    query = db_session.query(target_model).filter(
+        with_parent(root, relationship_attr)
+    )
+    if relationship_property.uselist:
+        return query.limit(max_rows).all()
+    return query.first()
+
+
+def _make_auth_resolver(field_name, roles, resolver=None, is_queryable=True, field_type=None):
+    def _auth_resolver(root, info, **kwargs):
+        ctx = info.context if info.context is not None else {}
+        user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
+        if not set(user_roles) & set(roles):
+            return None
+        if resolver is not None:
+            return resolver(root, info, **kwargs)
+        if not is_queryable and field_type is graphene.List:
+            return _resolve_relationship_list(root, field_name)
+        return getattr(root, field_name, None)
+    return _auth_resolver
 
 def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_col):
     """
@@ -64,7 +102,12 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
             attr_name = attr['name']
             resolver_name = "resolve_{}".format(attr_name)
             include_fields[attr_name] = attr['type'](attr['type_args'], description=attr['desc'])
-            include_fields[resolver_name] = attr['resolver_func']
+            if attr.get('auth_roles'):
+                include_fields[resolver_name] = _make_auth_resolver(
+                    attr_name, attr['auth_roles'], resolver=attr['resolver_func']
+                )
+            else:
+                include_fields[resolver_name] = attr['resolver_func']
         elif attr['ishidden']:
             # Hidden fields are excluded from the GraphQL type entirely so
             # they cannot be queried or introspected by clients.
@@ -84,17 +127,15 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
                 required_roles = attr['auth_roles']
                 field_name = attr['name']
 
-                def _make_auth_resolver(fname, roles):
-                    def _auth_resolver(root, info):
-                        ctx = info.context if info.context is not None else {}
-                        user_roles = ctx.get('user_roles', []) if isinstance(ctx, dict) else []
-                        if not set(user_roles) & set(roles):
-                            return None
-                        return getattr(root, fname, None)
-                    return _auth_resolver
-
                 include_fields['resolve_{}'.format(field_name)] = _make_auth_resolver(
-                    field_name, required_roles
+                    field_name,
+                    required_roles,
+                    is_queryable=attr['isqueryable'],
+                    field_type=attr['type'],
+                )
+            elif not attr['isqueryable'] and attr['type'] is graphene.List:
+                include_fields['resolve_{}'.format(attr['name'])] = (
+                    lambda root, info, fname=attr['name']: _resolve_relationship_list(root, fname)
                 )
 
     gql_attrs = {
@@ -166,6 +207,21 @@ class MyConnectionField(SQLAlchemyConnectionField):
     RELAY_ARGS = ['first', 'last', 'before', 'after']
 
     @classmethod
+    def connection_resolver(cls, resolver, connection_type, model, root, info, **args):
+        max_page_size = settings.GQL_MAX_PAGE_SIZE
+        for argument in ('first', 'last'):
+            page_size = args.get(argument)
+            if page_size is not None and (page_size < 0 or page_size > max_page_size):
+                raise ValueError(
+                    f'{argument} must be between 0 and {max_page_size}.'
+                )
+        if args.get('first') is None and args.get('last') is None:
+            args['first'] = max_page_size
+        return super(MyConnectionField, cls).connection_resolver(
+            resolver, connection_type, model, root, info, **args
+        )
+
+    @classmethod
     def get_query(cls, model, info, sort=None, filter=None, **args):
         """
         Build and return a SQLAlchemy ``Query`` with filtering and sorting
@@ -186,6 +242,7 @@ class MyConnectionField(SQLAlchemyConnectionField):
         """
         # In graphene 3.x, unset fields are passed as None rather than being
         # absent from args. Pop our custom args first (treating None as unset).
+        allow_regex = args.pop('_allow_regex', settings.GQL_ALLOW_REGEX)
         matches  = args.pop('matches', None)
         operator = args.pop('logic', None)
         sort_by_name = args.pop('sort_by', None)
@@ -196,8 +253,13 @@ class MyConnectionField(SQLAlchemyConnectionField):
         # client-controlled getattr on arbitrary/private model members.
         sort_clause = None
         if sort_by_name:
+            sortable_fields = _SORTABLE_FIELDS.get(model.__name__)
+            restricted_sort_fields = _RESTRICTED_SORT_FIELDS.get(model.__name__, set())
+            if sort_by_name in restricted_sort_fields:
+                raise ValueError('This field cannot be used for sorting.')
             if (
                 sort_by_name.startswith('_')
+                or (sortable_fields is not None and sort_by_name not in sortable_fields)
                 or not hasattr(model, sort_by_name)
                 or not hasattr(getattr(model, sort_by_name), 'property')
             ):
@@ -241,6 +303,8 @@ class MyConnectionField(SQLAlchemyConnectionField):
             if matches in ('exact', 'eq'):
                 filter_conditions.append(getattr(model, field) == value)
             elif matches in ('regex', 're'):
+                if not allow_regex:
+                    raise ValueError('Regex filtering is disabled by server policy.')
                 # Cap regex length to prevent ReDoS via catastrophic backtracking
                 # in the database engine from client-supplied patterns.
                 if len(str(value)) > 200:
@@ -304,6 +368,25 @@ for clazz in schema_settings.get_gql_classes():
             'Entity auth roles registered: %s -> %s',
             clazz['gql_db_class'], clazz['gql_entity_auth_roles'],
         )
+    register_model_policy(
+        globals()[clazz['gql_db_class']],
+        roles=clazz.get('gql_entity_auth_roles'),
+        row_auth_claims=clazz.get('gql_row_auth_claims'),
+    )
+    _SORTABLE_FIELDS[clazz['gql_db_class']] = {
+        column['name'] for column in clazz['gql_columns']
+        if column['isqueryable']
+        and not column['ishidden']
+        and not column['isresolver']
+        and not column.get('auth_roles')
+    }
+    _RESTRICTED_SORT_FIELDS[clazz['gql_db_class']] = {
+        column['name'] for column in clazz['gql_columns']
+        if column['ishidden']
+        or column['isresolver']
+        or not column['isqueryable']
+        or column.get('auth_roles')
+    }
     _gql_class_count += 1
 logger.info('GraphQL types built: %d', _gql_class_count)
 
@@ -330,7 +413,12 @@ def _make_gql_query_fields(cols):
         # Exclude hidden fields and resolver-backed fields; also skip columns
         # marked gql_isqueryable=False (e.g. relationship navigation fields)
         # because they cannot be used as SQL filter predicates.
-        if row['isqueryable'] and row['ishidden'] is False and row['isresolver'] is False:
+        if (
+            row['isqueryable']
+            and row['ishidden'] is False
+            and row['isresolver'] is False
+            and not row.get('auth_roles')
+        ):
             extra_kwargs = {}
             if row.get('deprecation_reason'):
                 extra_kwargs['deprecation_reason'] = row['deprecation_reason']

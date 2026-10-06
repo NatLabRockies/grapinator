@@ -17,6 +17,10 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
   this entity at all.  Callers whose roles do not intersect this list receive an empty result
   set (not a 401).  Omit or set to `None` / `[]` for public entities (no restriction).
   See [RBAC — Role-based access control](#rbac--role-based-access-control) for full details.
+- **ROW_AUTH_CLAIMS:** *(Optional)* Row-level access policy — map ORM column attributes to
+    dotted JWT claim paths. Only rows matching every mapped claim are returned. A missing claim
+    fails closed with no rows. The policy applies to root queries, relationships, and Relay node
+    lookups.
 - **FIELDS:** List of dictionaries defining each column to expose
     - **gql_col_name:** GraphQL column name
     - **gql_type:** Graphene type
@@ -405,9 +409,10 @@ Grapinator supports two granularities of role-based access control, both declare
 `schema.dct`.  Auth is **off by default** — omitting both keys leaves everything public and
 fully backward compatible.
 
-Auth mode must be enabled in `grapinator.ini` for RBAC to take effect.  With `AUTH_MODE = off`
-(the default), all RBAC declarations are silently ignored and every caller receives the full
-data set.  See [grapinator_ini.md](grapinator_ini.md) for configuration details.
+Auth mode must be enabled in `grapinator.ini` for callers to receive validated JWT roles and
+claims. With `AUTH_MODE = off` (the default), role-gated entities return no rows, restricted
+fields resolve to `null`, and row policies with missing claims return no rows. Public data remains
+available. See [grapinator_ini.md](grapinator_ini.md) for configuration details.
 
 > **Important — use `svc_gunicorn.py` when testing RBAC:**
 > JWT authentication is enforced by `BearerAuthMiddleware`, which is only inserted into the
@@ -438,6 +443,9 @@ whether the entity even exists.
     # Only callers with the 'hr' OR 'finance' role see any rows.
     # All other callers get an empty result set.
     'AUTH_ROLES': ['hr', 'finance'],
+    # Also restrict rows to the caller's organization claim.
+    # The ORM model must expose an `organization_id` column.
+    'ROW_AUTH_CLAIMS': {'organization_id': 'organization.id'},
     'FIELDS': [ ... ],
     'RELATIONSHIPS': [],
 }
@@ -445,13 +453,17 @@ whether the entity even exists.
 
 - A list means "any one of these roles is sufficient" (logical OR).
 - An empty list `[]` or absent key means no restriction (public).
+- `ROW_AUTH_CLAIMS` combines with `AUTH_ROLES`; both policies must pass.
+- Each key is a mapped ORM column attribute; each value is a dotted path in the validated JWT.
+- If a required claim is missing, queries and relationship/node lookups return no rows.
 
 ### Field-level access: `gql_auth_roles`
 
 `gql_auth_roles` is an optional key inside a field descriptor.  It gates access to a **single
 field**.  The entity query itself is allowed for all callers; only the protected field returns
-`null` for callers who lack the required role.  Auth-restricted fields are still fully
-introspectable — they appear in the schema but resolve to `null` for unauthorised callers.
+`null` for callers who lack the required role. Auth-restricted fields remain introspectable, but
+are excluded from filter arguments and sort keys so row membership or ordering cannot reveal
+their values.
 
 ```python
 'FIELDS': [
