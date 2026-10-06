@@ -386,6 +386,18 @@ class TestGraphQLSettings(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'GQL_MAX_ALIASES'):
             _make_mock_settings({('GRAPHENE', 'GQL_MAX_ALIASES'): '0'})
 
+    def test_northwind_example_csp_allows_graphiql_assets(self):
+        import os
+        example_ini = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), '..', 'grapinator', 'resources',
+            'grapinator_northwind_example.ini',
+        ))
+        example_settings = Settings(config_file=example_ini)
+        csp = example_settings.HTTP_HEADERS_CONTENT_SECURITY_POLICY
+        self.assertIn("'unsafe-inline'", csp)
+        self.assertIn('https://cdn.jsdelivr.net', csp)
+        self.assertIn('https://unpkg.com', csp)
+
 
 # ---------------------------------------------------------------------------
 # Settings — connection pool explicit values loaded from INI (issue #29)

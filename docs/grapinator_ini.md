@@ -30,6 +30,10 @@ gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:
 # Use an alternate ini file (e.g. for RBAC testing)
 GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini \
     gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
+
+# Use the Northwind example with explicit GraphQL budgets
+GRAPINATOR_CONFIG="$PWD/grapinator/resources/grapinator_northwind_example.ini" \
+    gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 ```
 
 This follows the same pattern as `GQLAPI_CRYPT_KEY` and makes it easy to run multiple
@@ -113,35 +117,54 @@ where options include:
 
 ## [GRAPHENE]
 
-GraphQL schema configuration.
+GraphQL schema and request-budget configuration. The query budgets below are
+all **unset by default**, preserving the previous unrestricted behavior. Set
+only the limits appropriate for the schema and client workload. A complete
+configuration with illustrative values for the bundled Northwind database is
+available in [grapinator_northwind_example.ini](../grapinator/resources/grapinator_northwind_example.ini).
 
 | Setting | Type | Description |
 |---------|------|-------------|
 | `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
-| `GQL_MAX_QUERY_DEPTH` | integer | Optional maximum GraphQL selection depth. Unset by default to preserve previous behavior. |
-| `GQL_MAX_INTROSPECTION_DEPTH` | integer | Optional depth limit for operations containing only standard introspection root fields. Unset by default. |
-| `GQL_MAX_QUERY_COMPLEXITY` | integer | Optional weighted field-cost budget. List and connection selections are weighted by their configured page bounds. Unset by default. |
-| `GQL_MAX_INTROSPECTION_COMPLEXITY` | integer | Optional separate complexity budget for schema introspection. Unset by default. |
-| `GQL_MAX_QUERY_FIELDS` | integer | Optional maximum selected field occurrences, including fragment expansions. Unset by default. |
-| `GQL_MAX_ALIASES` | integer | Optional maximum alias occurrences per operation. Unset by default. |
-| `GQL_MAX_PAGE_SIZE` | integer | Optional maximum `first`/`last` size and rows returned by a relationship list. Unset by default; no implicit connection page size is added. |
-| `GQL_ALLOW_REGEX` | boolean | Enable database regex filtering. Default: `True` for compatibility; set to `False` to disable. Regex patterns can still have pathological execution time. |
-| `GQL_PERSISTED_QUERIES_FILE` | path | Optional JSON object mapping SHA-256 query hashes to query documents. When configured, it becomes a strict operation allowlist and accepts standard persisted-query hash requests. Relative paths are resolved beside the active ini file. |
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `GQL_SCHEMA` | path | `schema.dct` in bundled config | Schema dictionary (`.dct`). A relative filename is resolved beside the active INI; absolute paths are used as-is. |
+| `GQL_MAX_QUERY_DEPTH` | integer | Unset | Maximum nested field depth for normal operations. Each selected field adds one level; aliases and fragments do not create separate depth levels, though fragment selections are counted. A low value can reject legitimate relationship queries. |
+| `GQL_MAX_INTROSPECTION_DEPTH` | integer | Unset | Separate depth ceiling for operations whose root selections are introspection fields such as `__schema` and `__type`. Keep this high enough for GraphiQL’s schema introspection query. |
+| `GQL_MAX_QUERY_COMPLEXITY` | integer | Unset | Maximum estimated cost of a normal operation. The estimate weights selected fields by depth and collection fan-out; it is a guardrail, not a database execution-time guarantee. |
+| `GQL_MAX_INTROSPECTION_COMPLEXITY` | integer | Unset | Separate estimated-cost ceiling for schema introspection. Introspection traverses large finite schema metadata and should not be constrained by the same list weights used for database collections. |
+| `GQL_MAX_QUERY_FIELDS` | integer | Unset | Maximum selected field occurrences. Fields expanded through fragments count each time they are selected. This bounds the validation traversal and limits very broad documents. |
+| `GQL_MAX_ALIASES` | integer | Unset | Maximum aliases in one operation. Aliases can repeat an expensive root field, so this is useful alongside complexity and field-count limits. |
+| `GQL_MAX_PAGE_SIZE` | integer | Unset | Maximum Relay `first`/`last` value and maximum rows returned by a generated relationship-list resolver. When set, a connection without `first` or `last` is capped at this value. When unset, Grapinator does not add an implicit page size. |
+| `GQL_ALLOW_REGEX` | boolean | `True` | Enables database regex filtering. Set to `False` to reject `matches: "regex"` and `matches: "re"`. When enabled, the existing 200-character pattern limit still applies, but does not guarantee bounded regex execution time. |
+| `GQL_PERSISTED_QUERIES_FILE` | path | Unset | Optional JSON object mapping lowercase SHA-256 hashes of exact query text to query documents. When configured, it is a strict allowlist: ordinary query text must be registered, and hash-only persisted-query requests must match. Relative paths resolve beside the active INI. |
+
+All numeric budget settings must be positive integers. Leave a setting out to
+disable that budget; setting it to zero is an error. Limits combine: an
+operation must pass every configured depth, cost, field-count, alias, and page
+size check. Configure `GQL_MAX_PAGE_SIZE` when relying on complexity estimates
+for collection queries, especially when clients can supply page sizes through
+variables.
+
+`GQL_PERSISTED_QUERIES_FILE` is different from a performance budget: once set,
+it rejects every operation not in the file. Entries use the form:
+
+```json
+{
+    "<sha256-of-the-exact-query-text>": "{ employees(first: 10) { edges { node { employee_id } } } }"
+}
+```
+
+Generate each key from the exact UTF-8 query string, including whitespace and
+newlines. Do not enable the setting until the file contains all operations the
+clients need.
 
 **Example:**
 ```ini
 [GRAPHENE]
 GQL_SCHEMA = schema.dct
-# Leave budget settings unset to preserve prior unbounded query behavior.
-# GQL_MAX_QUERY_DEPTH = 12
-# GQL_MAX_INTROSPECTION_DEPTH = 20
-# GQL_MAX_INTROSPECTION_COMPLEXITY = 5000
-# GQL_MAX_QUERY_COMPLEXITY = 1000
-# GQL_MAX_QUERY_FIELDS = 250
-# GQL_MAX_ALIASES = 20
-# GQL_MAX_PAGE_SIZE = 100
-# GQL_ALLOW_REGEX = False
-# GQL_PERSISTED_QUERIES_FILE = persisted_queries.json
+# The Northwind example file sets illustrative finite values for these.
+# Leave them out to retain the previous unbounded behavior.
 ```
 
 ---
