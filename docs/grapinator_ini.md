@@ -30,10 +30,6 @@ gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:
 # Use an alternate ini file (e.g. for RBAC testing)
 GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini \
     gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
-
-# Use the Northwind example configuration
-GRAPINATOR_CONFIG="$PWD/grapinator/resources/grapinator_northwind_example.ini" \
-    gunicorn --config grapinator/resources/gunicorn.conf.py grapinator.svc_gunicorn:application
 ```
 
 This follows the same pattern as `GQLAPI_CRYPT_KEY` and makes it easy to run multiple
