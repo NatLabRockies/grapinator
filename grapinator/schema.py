@@ -17,10 +17,18 @@ Filtering, sorting, and result paging are handled centrally in
 same query capabilities without any per-entity boilerplate.
 """
 
-from sqlalchemy import and_, or_, desc, asc, false as sql_false
+import re
+from sqlalchemy import and_, or_, desc, asc, false as sql_false, select
+from sqlalchemy import inspect as sqlalchemy_inspect
 import graphene
 from graphene import relay
+from graphene.relay.node import NodeField
 from graphene_sqlalchemy import SQLAlchemyObjectType, SQLAlchemyConnectionField
+from graphene.types.definitions import (
+    GrapheneInterfaceType,
+    GrapheneObjectType,
+    GrapheneUnionType,
+)
 from functools import lru_cache
 from graphql import (
     GraphQLArgument,
@@ -42,12 +50,15 @@ from grapinator.security import register_model_policy
 
 logger = logging.getLogger(__name__)
 
+
+class ClientError(Exception):
+    """Error whose message is safe to return to any caller."""
+
 # Module-level registry: maps SQLAlchemy class name (e.g. 'db_Employees') to
 # the list of roles required to query that entity.  Populated at schema-build
 # time; used by MyConnectionField.get_query() for entity-level RBAC.
 _ENTITY_AUTH_ROLES = {}
 _SORTABLE_FIELDS = {}
-_RESTRICTED_SORT_FIELDS = {}
 _FIELD_AUTH_ROLES = {}
 _FILTER_FIELD_AUTH_ROLES = {}
 _SORT_FIELD_AUTH_ROLES = {}
@@ -91,10 +102,11 @@ def _schema_for_role_key(role_key):
             return cloned_types[type_.name]
 
         if isinstance(type_, GraphQLObjectType):
-            clone = GraphQLObjectType(
+            clone = GrapheneObjectType(
                 type_.name,
                 lambda: clone_fields(type_),
                 interfaces=lambda: [clone_type(interface) for interface in type_.interfaces],
+                graphene_type=type_.graphene_type,
                 is_type_of=type_.is_type_of,
                 extensions=type_.extensions,
                 description=type_.description,
@@ -102,10 +114,11 @@ def _schema_for_role_key(role_key):
                 extension_ast_nodes=type_.extension_ast_nodes,
             )
         elif isinstance(type_, GraphQLInterfaceType):
-            clone = GraphQLInterfaceType(
+            clone = GrapheneInterfaceType(
                 type_.name,
                 lambda: clone_fields(type_),
                 interfaces=lambda: [clone_type(interface) for interface in type_.interfaces],
+                graphene_type=type_.graphene_type,
                 resolve_type=type_.resolve_type,
                 extensions=type_.extensions,
                 description=type_.description,
@@ -113,9 +126,10 @@ def _schema_for_role_key(role_key):
                 extension_ast_nodes=type_.extension_ast_nodes,
             )
         elif isinstance(type_, GraphQLUnionType):
-            clone = GraphQLUnionType(
+            clone = GrapheneUnionType(
                 type_.name,
                 types=lambda: [clone_type(member) for member in type_.types],
+                graphene_type=type_.graphene_type,
                 resolve_type=type_.resolve_type,
                 extensions=type_.extensions,
                 description=type_.description,
@@ -199,6 +213,30 @@ def _schema_for_role_key(role_key):
         extensions=base_schema.extensions,
     )
 
+
+def _policy_safe_get_node(cls, info, id):
+    model = cls._meta.model
+    primary_keys = sqlalchemy_inspect(model).primary_key
+    if len(primary_keys) != 1:
+        return None
+    return db_session.execute(
+        select(model).where(primary_keys[0] == id)
+    ).scalars().first()
+
+
+class _PolicySafeNodeField(NodeField):
+    def wrap_resolve(self, parent_resolver):
+        resolve = super().wrap_resolve(parent_resolver)
+
+        def resolve_node(*args, **kwargs):
+            try:
+                return resolve(*args, **kwargs)
+            except Exception:
+                logger.debug('Relay node lookup failed')
+                return None
+
+        return resolve_node
+
 def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_col):
     """
     Dynamically create a Graphene ``SQLAlchemyObjectType`` subclass for a
@@ -261,6 +299,7 @@ def gql_class_constructor(clazz_name, db_clazz_name, clazz_attrs, default_sort_c
             ,'interfaces': (relay.Node, )
             ,'exclude_fields': exclude_fields
             })
+        ,'get_node': classmethod(_policy_safe_get_node)
         ,**include_fields
         # Standard query-modifier fields available on every generated type.
         ,'matches': graphene.String(description='contains, exact, regex, re, startswith, sw, endswith, ew, eq, gt, gte, lt, lte, ne', default_value='contains')
@@ -353,35 +392,27 @@ class MyConnectionField(SQLAlchemyConnectionField):
         for field_name, value in args.items():
             required_roles = filter_roles.get(field_name)
             if value is not None and required_roles and not set(user_roles) & set(required_roles):
-                raise ValueError('Caller lacks a required role to filter by this field.')
+                raise ClientError('Invalid filter argument.')
 
         # Build ORDER BY only when a sort column is actually provided/non-None.
-        # Validate sort_by_name against actual model attributes to prevent
-        # client-controlled getattr on arbitrary/private model members.
+        # Only explicitly sortable fields available to the caller may affect
+        # ordering; every other value behaves like an unknown sort name.
         sort_clause = None
         if sort_by_name:
-            sortable_fields = _SORTABLE_FIELDS.get(model.__name__)
-            restricted_sort_fields = _RESTRICTED_SORT_FIELDS.get(model.__name__, set())
-            if sort_by_name in restricted_sort_fields:
-                raise ValueError('This field cannot be used for sorting.')
-            required_sort_roles = _SORT_FIELD_AUTH_ROLES.get(
-                model.__name__, {}
-            ).get(sort_by_name)
-            if required_sort_roles and not set(user_roles) & set(required_sort_roles):
-                raise ValueError('Caller lacks a required role to sort by this field.')
-            if (
-                sort_by_name.startswith('_')
-                or (sortable_fields is not None and sort_by_name not in sortable_fields)
-                or not hasattr(model, sort_by_name)
-                or not hasattr(getattr(model, sort_by_name), 'property')
-            ):
-                logger.warning(
-                    'get_query: invalid sort_by column %r on %s — ignored',
-                    sort_by_name, model.__name__,
-                )
-            else:
+            sort_roles = _SORT_FIELD_AUTH_ROLES.get(model.__name__, {})
+            allowed_sort_fields = {
+                name for name in _SORTABLE_FIELDS.get(model.__name__, ())
+                if not sort_roles.get(name)
+                or set(user_roles) & set(sort_roles[name])
+            }
+            if sort_by_name in allowed_sort_fields:
                 sort_col = getattr(model, sort_by_name)
                 sort_clause = asc(sort_col) if sort_dir != 'desc' else desc(sort_col)
+            else:
+                logger.debug(
+                    'get_query: sort_by %r ignored on %s',
+                    sort_by_name, model.__name__,
+                )
 
         # Let graphene-sqlalchemy 3.x handle its own sort/filter params.
         query = super(MyConnectionField, cls).get_query(
@@ -422,7 +453,11 @@ class MyConnectionField(SQLAlchemyConnectionField):
                         'get_query: regex pattern too long (%d chars) — rejected',
                         len(str(value)),
                     )
-                    raise ValueError('Regex pattern exceeds maximum allowed length (200 chars).')
+                    raise ClientError('Regex pattern exceeds maximum allowed length (200 chars).')
+                try:
+                    re.compile(str(value))
+                except re.error as error:
+                    raise ClientError('Invalid regex pattern.') from error
                 filter_conditions.append(getattr(model, field).regexp_match(value))
             elif matches in ('startswith', 'sw'):
                 filter_conditions.append(getattr(model, field).ilike(str(value) + '%'))
@@ -488,12 +523,6 @@ for clazz in schema_settings.get_gql_classes():
         if column['isqueryable']
         and not column['ishidden']
         and not column['isresolver']
-    }
-    _RESTRICTED_SORT_FIELDS[clazz['gql_db_class']] = {
-        column['name'] for column in clazz['gql_columns']
-        if column['ishidden']
-        or column['isresolver']
-        or not column['isqueryable']
     }
     _FILTER_FIELD_AUTH_ROLES[clazz['gql_db_class']] = {
         column['name']: column['auth_roles']
@@ -579,7 +608,7 @@ class Query(graphene.ObjectType):
 
     # Relay global object identification — allows any node to be fetched by
     # its opaque global ID (base64-encoded type + primary key).
-    node = relay.Node.Field()
+    node = _PolicySafeNodeField(relay.Node)
 
     # Dynamically attach a connection field for every entity in the schema.
     # Using locals() inside the class body writes directly into the class

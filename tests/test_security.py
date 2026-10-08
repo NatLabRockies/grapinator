@@ -21,7 +21,7 @@ from . import context  # noqa: F401
 import jwt as pyjwt
 
 from grapinator.auth import BearerAuthMiddleware
-from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy import Column, ForeignKey, Integer, String, create_engine, event
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from grapinator.security import register_model_policy, set_request_context
 
@@ -105,6 +105,52 @@ class TestRequestScopedOrmPolicies(unittest.TestCase):
         self._set_context([], {'organization': {'id': 'alpha'}})
         parent = self.session.get(_PolicyParent, 1)
         self.assertEqual(parent.items, [])
+
+    def test_policy_safe_node_lookup_applies_entity_and_row_policies(self):
+        import grapinator.schema as schema_module
+
+        class PolicyGrapheneType:
+            _meta = type('Meta', (), {'model': _PolicyItem})
+
+        self._set_context(['reader'], {'organization': {'id': 'alpha'}})
+        with patch.object(schema_module, 'db_session', self.session):
+            visible = schema_module._policy_safe_get_node(
+                PolicyGrapheneType, None, '1'
+            )
+            hidden = schema_module._policy_safe_get_node(
+                PolicyGrapheneType, None, '2'
+            )
+            self._set_context([], {'organization': {'id': 'alpha'}})
+            role_denied = schema_module._policy_safe_get_node(
+                PolicyGrapheneType, None, '1'
+            )
+        self.assertEqual(visible.id, 1)
+        self.assertIsNone(hidden)
+        self.assertIsNone(role_denied)
+
+    def test_policy_safe_node_lookup_executes_with_identity_map_hit(self):
+        import grapinator.schema as schema_module
+
+        class PolicyGrapheneType:
+            _meta = type('Meta', (), {'model': _PolicyItem})
+
+        self._set_context(['reader'], {'organization': {'id': 'beta'}})
+        self.assertIsNotNone(self.session.get(_PolicyItem, 2))
+        self._set_context(['reader'], {'organization': {'id': 'alpha'}})
+        statements = []
+
+        def record_sql(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(_policy_engine, 'before_cursor_execute', record_sql)
+        self.addCleanup(event.remove, _policy_engine, 'before_cursor_execute', record_sql)
+        with patch.object(schema_module, 'db_session', self.session):
+            hidden = schema_module._policy_safe_get_node(
+                PolicyGrapheneType, None, 2
+            )
+
+        self.assertIsNone(hidden)
+        self.assertTrue(any('SELECT' in statement.upper() for statement in statements))
 
 def _mock_settings(**overrides):
     s = MagicMock()
@@ -330,7 +376,7 @@ class TestSortByValidation(unittest.TestCase):
 class TestRegexLengthCap(unittest.TestCase):
     """
     Regression tests for MEDIUM: client-supplied regex patterns longer than
-    200 characters must be rejected with ValueError (not passed to the DB).
+    200 characters must be rejected with a safe client error (not passed to the DB).
     """
 
     def _run_get_query_with_regex(self, pattern):
@@ -369,6 +415,11 @@ class TestRegexLengthCap(unittest.TestCase):
         mock_query = self._run_get_query_with_regex('Smith|Jones')
         mock_query.filter.assert_called_once()
 
+    def test_invalid_regex_rejected_with_safe_message(self):
+        from grapinator.schema import ClientError
+        with self.assertRaisesRegex(ClientError, 'Invalid regex pattern'):
+            self._run_get_query_with_regex('[')
+
     def test_exactly_200_chars_accepted(self):
         """A pattern exactly 200 characters long is accepted."""
         pattern = 'a' * 200
@@ -376,16 +427,16 @@ class TestRegexLengthCap(unittest.TestCase):
         mock_query.filter.assert_called_once()
 
     def test_201_chars_rejected(self):
-        """A pattern 201 characters long raises ValueError."""
+        """A pattern 201 characters long raises a safe client error."""
         pattern = 'a' * 201
-        from grapinator.schema import MyConnectionField
+        from grapinator.schema import ClientError, MyConnectionField
         from grapinator.model import db_Employees
         mock_query = MagicMock()
         mock_query.filter = MagicMock(return_value=mock_query)
         info = MagicMock()
         info.context = {'user_roles': [], 'authenticated': False}
         with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
-            with self.assertRaises(ValueError) as ctx:
+            with self.assertRaises(ClientError) as ctx:
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='regex',
@@ -403,7 +454,8 @@ class TestRegexLengthCap(unittest.TestCase):
         info = MagicMock()
         info.context = {'user_roles': [], 'authenticated': False}
         with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
-            with self.assertRaises(ValueError):
+            from grapinator.schema import ClientError
+            with self.assertRaises(ClientError):
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='regex',
@@ -420,7 +472,8 @@ class TestRegexLengthCap(unittest.TestCase):
         info = MagicMock()
         info.context = {'user_roles': [], 'authenticated': False}
         with patch.object(MyConnectionField.__bases__[0], 'get_query', return_value=mock_query):
-            with self.assertRaises(ValueError):
+            from grapinator.schema import ClientError
+            with self.assertRaises(ClientError):
                 MyConnectionField.get_query(
                     db_Employees, info,
                     matches='re',

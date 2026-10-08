@@ -21,10 +21,12 @@ calling ``main()`` directly.
 
 import json
 import logging
+import uuid
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
-from graphql import GraphQLError, specified_rules
+from graphql import ExecutionResult, GraphQLError, specified_rules
 from graphql.validation.rules.fields_on_correct_type import FieldsOnCorrectTypeRule
+from graphql.validation.rules.known_argument_names import KnownArgumentNamesRule
 from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
@@ -32,30 +34,80 @@ from graphql_server.http import GraphQLRequestData
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
 from grapinator.security import set_request_context
-from grapinator.schema import get_schema_for_roles, gql_schema
+from grapinator.schema import (
+    ClientError,
+    _FIELD_AUTH_ROLES,
+    _QUERY_FILTER_AUTH_ROLES,
+    get_schema_for_roles,
+    gql_schema,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class _UnauthenticatedFieldsOnCorrectTypeRule(FieldsOnCorrectTypeRule):
-    """Reject unknown fields without suggesting other fields to anonymous users."""
+def _validation_rules_for_context(context):
+    authenticated = context.get('authenticated', False)
+    user_roles = set(context.get('user_roles', []))
 
-    def enter_field(self, node, *_args):
-        parent_type = self.context.get_parent_type()
-        if parent_type and not self.context.get_field_def():
-            self.report_error(
-                GraphQLError(
-                    f"Cannot query field '{node.name.value}' on type '{parent_type}'.",
-                    node,
+    class RoleAwareFieldsOnCorrectTypeRule(FieldsOnCorrectTypeRule):
+        def enter_field(self, node, *args):
+            parent_type = self.context.get_parent_type()
+            if parent_type:
+                required_roles = _FIELD_AUTH_ROLES.get(parent_type.name, {}).get(
+                    node.name.value
                 )
+                if (
+                    not authenticated
+                    or (required_roles and not user_roles.intersection(required_roles))
+                ):
+                    if not self.context.get_field_def():
+                        self.report_error(
+                            GraphQLError(
+                                f"Cannot query field '{node.name.value}' "
+                                f"on type '{parent_type}'.",
+                                node,
+                            )
+                        )
+                        return
+            super().enter_field(node, *args)
+
+    class RoleAwareKnownArgumentNamesRule(KnownArgumentNamesRule):
+        def enter_argument(self, node, *args):
+            if self.context.get_argument():
+                return
+            parent_type = self.context.get_parent_type()
+            ancestors = args[3] if len(args) > 3 else ()
+            field_node = ancestors[-1] if ancestors else None
+            field_name = getattr(getattr(field_node, 'name', None), 'value', None)
+            required_roles = _QUERY_FILTER_AUTH_ROLES.get(field_name, {}).get(
+                node.name.value
             )
+            if (
+                parent_type
+                and field_name
+                and (
+                    not authenticated
+                    or (required_roles and not user_roles.intersection(required_roles))
+                )
+            ):
+                self.report_error(
+                    GraphQLError(
+                        f"Unknown argument '{node.name.value}' on field "
+                        f"'{parent_type.name}.{field_name}'.",
+                        node,
+                    )
+                )
+                return
+            super().enter_argument(node, *args)
 
-
-_UNAUTHENTICATED_VALIDATION_RULES = tuple(
-    _UnauthenticatedFieldsOnCorrectTypeRule
-    if rule is FieldsOnCorrectTypeRule else rule
-    for rule in specified_rules
-)
+    return tuple(
+        RoleAwareFieldsOnCorrectTypeRule
+        if rule is FieldsOnCorrectTypeRule
+        else RoleAwareKnownArgumentNamesRule
+        if rule is KnownArgumentNamesRule
+        else rule
+        for rule in specified_rules
+    )
 
 
 class FixedGraphQLView(GraphQLView):
@@ -200,16 +252,44 @@ class FixedGraphQLView(GraphQLView):
             'authenticated': getattr(g, 'authenticated', False),
         }
 
+    def process_result(self, request, result, strict=False):
+        errors = []
+        changed = False
+        for error in result.errors or ():
+            original = error.original_error
+            if original is None or isinstance(original, (GraphQLError, ClientError)):
+                errors.append(error)
+                continue
+
+            changed = True
+            correlation_id = uuid.uuid4().hex
+            logger.error(
+                'GraphQL error [%s]',
+                correlation_id,
+                exc_info=(type(original), original, original.__traceback__),
+            )
+            errors.append(GraphQLError(
+                'Internal server error.',
+                nodes=error.nodes,
+                path=error.path,
+                extensions={'correlation_id': correlation_id},
+            ))
+
+        if not changed:
+            return super().process_result(request, result, strict)
+        safe_result = ExecutionResult(
+            data=result.data,
+            errors=errors,
+            extensions=result.extensions,
+        )
+        return super().process_result(request, safe_result, strict)
+
     def execute_operation(
         self, request_adapter, request_data, context, root_value,
         allowed_operation_types,
     ):
         set_request_context(db_session(), context)
-        validation_rules = (
-            _UNAUTHENTICATED_VALIDATION_RULES
-            if not context.get('authenticated', False)
-            else None
-        )
+        validation_rules = _validation_rules_for_context(context)
         return execute_sync(
             schema=get_schema_for_roles(context.get('user_roles', [])),
             query=request_data.document or request_data.query,
