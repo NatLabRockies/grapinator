@@ -17,15 +17,20 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
   this entity at all.  Callers whose roles do not intersect this list receive an empty result
   set (not a 401).  Omit or set to `None` / `[]` for public entities (no restriction).
   See [RBAC — Role-based access control](#rbac--role-based-access-control) for full details.
+- **ROW_AUTH_CLAIMS:** *(Optional)* Row-level access policy — map ORM column attributes to
+    dotted JWT claim paths. Only rows matching every mapped claim are returned. A missing claim
+    fails closed with no rows. The policy applies to root queries, relationships, and Relay node
+    lookups.
 - **FIELDS:** List of dictionaries defining each column to expose
     - **gql_col_name:** GraphQL column name
     - **gql_type:** Graphene type
     - **gql_description:** Description string for the GraphiQL web browser
     - **gql_deprecation_reason:** *(Optional)* Marks the field as deprecated in the GraphQL schema. The string value is displayed in GraphiQL's schema explorer as the reason for deprecation. Deprecated fields are hidden in GraphiQL by default but remain fully queryable. Omit this key (or set it to `None`) for non-deprecated fields.
-    - **gql_auth_roles:** *(Optional)* Field-level role gate — list of role strings required to
-      read this field.  Callers without a matching role receive `null` for this field; they can
-      still query and see the field in the schema (introspection is unrestricted).  Omit or set
-      to `None` / `[]` for public fields (no restriction).
+        - **gql_auth_roles:** *(Optional)* A non-empty list of role names required to access this
+            field. Callers with any matching role see it in GraphiQL/introspection and may select,
+            filter, and sort by it. Callers without a matching role receive a role-specific schema
+            without the field, filter argument, or sort permission. Omit or set to `None` / `[]` for
+            fields available to everyone.
     - **db_col_name:** Database column name.  
     - **db_type:** SQLAlchemy database type
 - **RELATIONSHIPS:** List of dictionaries containing SQLAlchemy class model [relationships](https://docs.sqlalchemy.org/en/13/orm/relationship_api.html#sqlalchemy.orm.relationship)
@@ -405,9 +410,10 @@ Grapinator supports two granularities of role-based access control, both declare
 `schema.dct`.  Auth is **off by default** — omitting both keys leaves everything public and
 fully backward compatible.
 
-Auth mode must be enabled in `grapinator.ini` for RBAC to take effect.  With `AUTH_MODE = off`
-(the default), all RBAC declarations are silently ignored and every caller receives the full
-data set.  See [grapinator_ini.md](grapinator_ini.md) for configuration details.
+Auth mode must be enabled in `grapinator.ini` for callers to receive validated JWT roles and
+claims. With `AUTH_MODE = off` (the default), role-gated entities return no rows, restricted
+fields resolve to `null`, and row policies with missing claims return no rows. Public data remains
+available. See [grapinator_ini.md](grapinator_ini.md) for configuration details.
 
 > **Important — use `svc_gunicorn.py` when testing RBAC:**
 > JWT authentication is enforced by `BearerAuthMiddleware`, which is only inserted into the
@@ -438,6 +444,9 @@ whether the entity even exists.
     # Only callers with the 'hr' OR 'finance' role see any rows.
     # All other callers get an empty result set.
     'AUTH_ROLES': ['hr', 'finance'],
+    # Also restrict rows to the caller's organization claim.
+    # The ORM model must expose an `organization_id` column.
+    'ROW_AUTH_CLAIMS': {'organization_id': 'organization.id'},
     'FIELDS': [ ... ],
     'RELATIONSHIPS': [],
 }
@@ -445,13 +454,19 @@ whether the entity even exists.
 
 - A list means "any one of these roles is sufficient" (logical OR).
 - An empty list `[]` or absent key means no restriction (public).
+- `ROW_AUTH_CLAIMS` combines with `AUTH_ROLES`; both policies must pass.
+- Each key is a mapped ORM column attribute; each value is a dotted path in the validated JWT.
+- If a required claim is missing, queries and relationship/node lookups return no rows.
 
 ### Field-level access: `gql_auth_roles`
 
-`gql_auth_roles` is an optional key inside a field descriptor.  It gates access to a **single
-field**.  The entity query itself is allowed for all callers; only the protected field returns
-`null` for callers who lack the required role.  Auth-restricted fields are still fully
-introspectable — they appear in the schema but resolve to `null` for unauthorised callers.
+`gql_auth_roles` is an optional key inside a field descriptor. A non-empty value lists the roles
+that may use the field. GraphQL execution and introspection use a schema selected from the
+validated request roles: a caller with a matching role sees the field and may select, filter,
+and sort by it; a caller without one does not see the field in GraphiQL or introspection, and
+queries using the field or its filter argument fail validation. Attempts to sort by a protected
+field without the role are rejected before the database query is run. Use `AUTH_ROLES` when the
+entire entity should be role-gated.
 
 ```python
 'FIELDS': [
@@ -461,8 +476,7 @@ introspectable — they appear in the schema but resolve to `null` for unauthori
         'gql_description': 'Employee salary — HR and finance only.',
         'db_col_name': 'Salary',
         'db_type': Float,
-        # Only callers with the 'hr' OR 'finance' role receive the real value.
-        # All other callers receive null for this field.
+        # Only callers with 'hr' or 'finance' see or query the field.
         'gql_auth_roles': ['hr', 'finance'],
     },
     {
@@ -478,22 +492,23 @@ introspectable — they appear in the schema but resolve to `null` for unauthori
 
 ### Combining both levels
 
-You can stack `AUTH_ROLES` and `gql_auth_roles` on the same entity.  For example: the entity
-is visible to all authenticated users (`AUTH_ROLES` absent), but the `salary` field within it
-is restricted to HR (`gql_auth_roles: ['hr']`).
+`AUTH_ROLES` can gate an entity while `gql_auth_roles` further restricts selected fields. A
+caller must pass the entity gate to get rows and have a matching field role for the protected
+field to appear in their schema.
 
 ### Role name conventions
 
-Role names are arbitrary strings.  They must match the values in the JWT roles claim exactly
-(case-sensitive).  The roles claim name and its location inside the token are controlled by
-`AUTH_ROLES_CLAIM` in `grapinator.ini` (default: `roles`).
+Entity role names are arbitrary strings. They must match the values in the JWT roles claim
+exactly (case-sensitive). The roles claim name and its location inside the token are controlled
+by `AUTH_ROLES_CLAIM` in `grapinator.ini` (default: `roles`). Field role values in
+`gql_auth_roles` use the same exact, case-sensitive matching.
 
 #### Azure Entra ID
 
 Define App Roles in your App Registration with the desired `Value` strings (e.g. `hr`,
 `finance`).  An Entra ID admin assigns users or groups to each role.  The token's `roles`
 claim will contain the `Value` strings — so those values must match what you put in
-`gql_auth_roles` / `AUTH_ROLES`.  You (the App Owner) define the role names; only the
+`gql_auth_roles` / `AUTH_ROLES`. You (the App Owner) define the role names; only the
 assignment of people to roles requires an admin.
 
 #### Keycloak

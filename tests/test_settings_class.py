@@ -108,6 +108,7 @@ _MINIMAL_SCHEMA = [
         'DB_TABLE_NAME': 'TestItems',
         'DB_TABLE_PK': 'ItemID',
         'DB_DEFAULT_SORT_COL': 'ItemID',
+        'ROW_AUTH_CLAIMS': {'organization_id': 'organization.id'},
         'FIELDS': [
             {
                 'gql_col_name': 'item_id',
@@ -288,6 +289,12 @@ class TestSchemaSettingsGqlClasses(unittest.TestCase):
     def test_gql_db_default_sort_col_mapped_correctly(self):
         cls_def = self.ss.get_gql_classes()[0]
         self.assertEqual(cls_def['gql_db_default_sort_col'], 'ItemID')
+
+    def test_row_auth_claims_are_preserved(self):
+        self.assertEqual(
+            self.ss.get_gql_classes()[0]['gql_row_auth_claims'],
+            {'organization_id': 'organization.id'},
+        )
 
     def test_gql_column_optional_type_args_defaults_to_none(self):
         """gql_of_type absent → type_args defaults to None."""

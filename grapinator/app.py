@@ -23,14 +23,39 @@ import json
 import logging
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
+from graphql import GraphQLError, specified_rules
+from graphql.validation.rules.fields_on_correct_type import FieldsOnCorrectTypeRule
+from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
 
 from grapinator import settings, schema_settings, log
 from grapinator.model import db_session
-from grapinator.schema import gql_schema
+from grapinator.security import set_request_context
+from grapinator.schema import get_schema_for_roles, gql_schema
 
 logger = logging.getLogger(__name__)
+
+
+class _UnauthenticatedFieldsOnCorrectTypeRule(FieldsOnCorrectTypeRule):
+    """Reject unknown fields without suggesting other fields to anonymous users."""
+
+    def enter_field(self, node, *_args):
+        parent_type = self.context.get_parent_type()
+        if parent_type and not self.context.get_field_def():
+            self.report_error(
+                GraphQLError(
+                    f"Cannot query field '{node.name.value}' on type '{parent_type}'.",
+                    node,
+                )
+            )
+
+
+_UNAUTHENTICATED_VALIDATION_RULES = tuple(
+    _UnauthenticatedFieldsOnCorrectTypeRule
+    if rule is FieldsOnCorrectTypeRule else rule
+    for rule in specified_rules
+)
 
 
 class FixedGraphQLView(GraphQLView):
@@ -156,23 +181,46 @@ class FixedGraphQLView(GraphQLView):
         """
         Return the GraphQL execution context dict used by resolvers.
 
-        Overrides the default implementation to expose ``user_roles`` and
-        ``authenticated`` (populated by
+        Overrides the default implementation to expose ``user_roles``,
+        ``user_claims``, and ``authenticated`` (populated by
         :class:`~grapinator.auth.BearerAuthMiddleware` via
         :func:`_load_auth_state`) so that field- and entity-level RBAC checks
         in ``schema.py`` can gate access without coupling to the WSGI environ.
 
         :param request:  The current Flask ``Request`` object.
         :param response: The current Flask ``Response`` object.
-        :returns: Dict with keys ``request``, ``response``, ``user_roles``,
-                  and ``authenticated``.
+        :returns: Dict with request/response, validated roles and claims,
+              and the authentication status.
         """
         return {
             'request': request,
             'response': response,
             'user_roles': getattr(g, 'user_roles', []),
+            'user_claims': getattr(g, 'user_claims', {}),
             'authenticated': getattr(g, 'authenticated', False),
         }
+
+    def execute_operation(
+        self, request_adapter, request_data, context, root_value,
+        allowed_operation_types,
+    ):
+        set_request_context(db_session(), context)
+        validation_rules = (
+            _UNAUTHENTICATED_VALIDATION_RULES
+            if not context.get('authenticated', False)
+            else None
+        )
+        return execute_sync(
+            schema=get_schema_for_roles(context.get('user_roles', [])),
+            query=request_data.document or request_data.query,
+            root_value=root_value,
+            variable_values=request_data.variables,
+            context_value=context,
+            operation_name=request_data.operation_name,
+            allowed_operation_types=allowed_operation_types,
+            operation_extensions=request_data.extensions,
+            validation_rules=validation_rules,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -197,12 +245,16 @@ def _load_auth_state():
 
     ``g.user_roles``     — list of role strings from the validated token;
                            empty list for unauthenticated requests.
+    ``g.user_claims``    — decoded JWT claim mapping;
+                           empty dict for unauthenticated requests.
     ``g.authenticated``  — ``True`` when a valid bearer token was presented.
 
     These values are consumed by :meth:`FixedGraphQLView.get_context` and are
     available to any other Flask extension or view that needs auth information.
     """
     g.user_roles = flask_request.environ.get('grapinator.user_roles', [])
+    g.user_claims = flask_request.environ.get('grapinator.user_claims', {})
+    g.user_claims = flask_request.environ.get('grapinator.user_claims', {})
     g.authenticated = flask_request.environ.get('grapinator.authenticated', False)
     logger.debug(
         'Auth state: authenticated=%s roles=%s path=%s',

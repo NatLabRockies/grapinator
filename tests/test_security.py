@@ -21,6 +21,9 @@ from . import context  # noqa: F401
 import jwt as pyjwt
 
 from grapinator.auth import BearerAuthMiddleware
+from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from grapinator.security import register_model_policy, set_request_context
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +32,79 @@ from grapinator.auth import BearerAuthMiddleware
 
 DEV_SECRET = 'test-dev-secret-do-not-use-in-production'
 
+
+_PolicyBase = declarative_base()
+
+
+class _PolicyParent(_PolicyBase):
+    __tablename__ = 'policy_parents'
+    id = Column(Integer, primary_key=True)
+    items = relationship('_PolicyItem', back_populates='parent')
+
+
+class _PolicyItem(_PolicyBase):
+    __tablename__ = 'policy_items'
+    id = Column(Integer, primary_key=True)
+    parent_id = Column(ForeignKey('policy_parents.id'))
+    tenant_id = Column(String, nullable=False)
+    value = Column(String)
+    parent = relationship('_PolicyParent', back_populates='items')
+
+
+_policy_engine = create_engine('sqlite:///:memory:')
+_PolicyBase.metadata.create_all(_policy_engine)
+_PolicySession = sessionmaker(bind=_policy_engine)
+register_model_policy(
+    _PolicyItem,
+    roles=['reader'],
+    row_auth_claims={'tenant_id': 'organization.id'},
+)
+
+with _PolicySession() as _seed_session:
+    _seed_session.add(_PolicyParent(id=1, items=[
+        _PolicyItem(id=1, tenant_id='alpha', value='visible'),
+        _PolicyItem(id=2, tenant_id='beta', value='other tenant'),
+    ]))
+    _seed_session.commit()
+
+
+class TestRequestScopedOrmPolicies(unittest.TestCase):
+    def setUp(self):
+        self.session = _PolicySession()
+        self.addCleanup(self.session.close)
+
+    def _set_context(self, roles=None, claims=None):
+        set_request_context(self.session, {
+            'user_roles': roles or [],
+            'user_claims': claims or {},
+        })
+
+    def test_row_policy_scopes_direct_queries(self):
+        self._set_context(['reader'], {'organization': {'id': 'alpha'}})
+        rows = self.session.query(_PolicyItem).all()
+        self.assertEqual([row.id for row in rows], [1])
+
+    def test_missing_row_claim_fails_closed(self):
+        self._set_context(['reader'], {})
+        self.assertEqual(self.session.query(_PolicyItem).all(), [])
+
+    def test_non_scalar_row_claim_fails_closed(self):
+        self._set_context(['reader'], {'organization': {'id': ['alpha']}})
+        self.assertEqual(self.session.query(_PolicyItem).all(), [])
+
+    def test_entity_role_applies_to_identity_lookup(self):
+        self._set_context([], {'organization': {'id': 'alpha'}})
+        self.assertIsNone(self.session.get(_PolicyItem, 1))
+
+    def test_policies_apply_to_relationship_loads(self):
+        self._set_context(['reader'], {'organization': {'id': 'alpha'}})
+        parent = self.session.get(_PolicyParent, 1)
+        self.assertEqual([item.id for item in parent.items], [1])
+
+    def test_entity_role_denies_relationship_loads(self):
+        self._set_context([], {'organization': {'id': 'alpha'}})
+        parent = self.session.get(_PolicyParent, 1)
+        self.assertEqual(parent.items, [])
 
 def _mock_settings(**overrides):
     s = MagicMock()
@@ -272,6 +348,21 @@ class TestRegexLengthCap(unittest.TestCase):
                 first_name=pattern,
             )
         return mock_query
+
+    def test_regex_remains_enabled_by_default(self):
+        from grapinator.schema import MyConnectionField
+        from grapinator.model import db_Employees
+        mock_query = MagicMock()
+        mock_query.filter = MagicMock(return_value=mock_query)
+        info = MagicMock()
+        info.context = {'user_roles': []}
+        with patch.object(
+            MyConnectionField.__bases__[0], 'get_query', return_value=mock_query
+        ):
+            MyConnectionField.get_query(
+                db_Employees, info, matches='regex', first_name='.*'
+            )
+        mock_query.filter.assert_called_once()
 
     def test_short_regex_accepted(self):
         """A regex pattern under 200 chars is passed through to the query."""

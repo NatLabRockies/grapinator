@@ -19,6 +19,13 @@ _config_file = os.environ.get(
     'GRAPINATOR_CONFIG',
     path.join(path.abspath(path.dirname(__file__)), 'resources', 'grapinator.ini'),
 )
+_package_dir = path.abspath(path.dirname(__file__))
+if (
+    path.isabs(_config_file)
+    and not path.exists(_config_file)
+    and (_config_file == '/resources' or _config_file.startswith('/resources/'))
+):
+    _config_file = path.join(_package_dir, _config_file.lstrip('/'))
 _resources_dir = path.dirname(path.abspath(_config_file))
 
 # Setup logging before any sub-module imports so the hierarchy is in place
@@ -44,7 +51,6 @@ log.info(
 # directory.  Resolve it now so the rest of the app always sees an absolute path.
 if settings.GQL_SCHEMA and not path.isabs(settings.GQL_SCHEMA):
     settings.GQL_SCHEMA = path.join(_resources_dir, settings.GQL_SCHEMA)
-
 # get app schema settings for dynamic class creation, exit if something missing
 log.info('Loading schema: %s', settings.GQL_SCHEMA)
 try:

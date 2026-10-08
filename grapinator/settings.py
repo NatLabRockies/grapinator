@@ -677,6 +677,8 @@ class SchemaSettings(object):
                 ,'gql_db_default_sort_col': row['DB_DEFAULT_SORT_COL']
                 # AUTH_ROLES: entity-level role list; absent/None means public (no restriction)
                 ,'gql_entity_auth_roles': row['AUTH_ROLES'] if 'AUTH_ROLES' in row and row['AUTH_ROLES'] else None
+                # ROW_AUTH_CLAIMS maps ORM column names to dotted JWT claim paths.
+                ,'gql_row_auth_claims': row.get('ROW_AUTH_CLAIMS', {})
                 }
             gql_classes.append(gql_class)
         return gql_classes

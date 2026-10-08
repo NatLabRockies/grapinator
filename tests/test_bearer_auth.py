@@ -321,6 +321,14 @@ class TestBearerAuthMiddlewareMixedMode(unittest.TestCase):
         self.assertIn('admin', self.captured.get('grapinator.user_roles', []))
         self.assertIn('reader', self.captured.get('grapinator.user_roles', []))
 
+    def test_valid_token_sets_claims_in_environ(self):
+        claims = {'organization': {'id': 'north'}, 'sub': 'user-1'}
+        token = _make_token(roles=['reader'], extra_claims=claims)
+        environ = _make_environ(auth_header=f'Bearer {token}')
+        self._call(environ)
+        self.assertEqual(self.captured.get('grapinator.user_claims', {}).get('organization'),
+                         {'id': 'north'})
+
     def test_valid_token_sets_authenticated_true(self):
         token = _make_token(roles=['admin'])
         environ = _make_environ(auth_header=f'Bearer {token}')
@@ -526,138 +534,18 @@ class TestBearerAuthMiddlewareRSA(unittest.TestCase):
 
 
 # ===========================================================================
-# Schema RBAC — field-level resolver wrapper
+# Schema RBAC — field-level schema hiding
 # ===========================================================================
 
 class TestFieldLevelRBAC(unittest.TestCase):
-    """
-    Test the auth resolver wrapper injected by gql_class_constructor for
-    fields with gql_auth_roles declared.
-
-    We import schema.py components directly rather than running GraphQL
-    queries so the test is fast and has no database dependency.
-    """
-
-    def _make_context(self, roles):
-        return {'user_roles': roles}
-
-    def _make_info(self, roles):
-        """Build a minimal graphene ResolveInfo-like mock."""
-        info = MagicMock()
-        info.context = self._make_context(roles)
-        return info
-
-    def test_resolver_returns_value_when_role_matches(self):
-        """A caller with the required role receives the real field value."""
-        from grapinator.schema import gql_class_constructor
-
-        # Build a minimal schema entry with one auth-protected field
-        attrs = [{
-            'name': 'secret_salary',
-            'type': __import__('graphene').Int,
-            'desc': 'Protected field',
-            'type_args': None,
-            'isqueryable': True,
-            'ishidden': False,
-            'isresolver': False,
-            'auth_roles': ['hr'],
-            'deprecation_reason': None,
-        }]
-
-        # gql_class_constructor needs a real SQLAlchemy model in globals().
-        # Use db_Employees which is loaded by grapinator.model.
-        import grapinator.schema as schema_mod
-        cls = gql_class_constructor('TestHRType', 'db_Employees', attrs, 'employee_id')
-
-        resolver = getattr(cls, 'resolve_secret_salary', None)
-        self.assertIsNotNone(resolver, 'Auth resolver should be injected for auth_roles field')
-
-        root = MagicMock()
-        root.secret_salary = 99000
-        info = self._make_info(roles=['hr'])
-        result = resolver(root, info)
-        self.assertEqual(result, 99000)
-
-    def test_resolver_returns_none_when_role_missing(self):
-        """A caller without the required role receives None."""
-        from grapinator.schema import gql_class_constructor
-
-        attrs = [{
-            'name': 'secret_salary',
-            'type': __import__('graphene').Int,
-            'desc': 'Protected field',
-            'type_args': None,
-            'isqueryable': True,
-            'ishidden': False,
-            'isresolver': False,
-            'auth_roles': ['hr'],
-            'deprecation_reason': None,
-        }]
-
-        cls = gql_class_constructor('TestHRType2', 'db_Employees', attrs, 'employee_id')
-        resolver = getattr(cls, 'resolve_secret_salary')
-        root = MagicMock()
-        root.secret_salary = 99000
-        info = self._make_info(roles=['reader'])  # 'reader' is not in ['hr']
-        result = resolver(root, info)
-        self.assertIsNone(result)
-
-    def test_resolver_returns_none_when_no_roles(self):
-        """Unauthenticated caller (empty roles) receives None for auth fields."""
-        from grapinator.schema import gql_class_constructor
-
-        attrs = [{
-            'name': 'secret_salary',
-            'type': __import__('graphene').Int,
-            'desc': 'Protected field',
-            'type_args': None,
-            'isqueryable': True,
-            'ishidden': False,
-            'isresolver': False,
-            'auth_roles': ['hr'],
-            'deprecation_reason': None,
-        }]
-
-        cls = gql_class_constructor('TestHRType3', 'db_Employees', attrs, 'employee_id')
-        resolver = getattr(cls, 'resolve_secret_salary')
-        root = MagicMock()
-        root.secret_salary = 99000
-        info = self._make_info(roles=[])
-        result = resolver(root, info)
-        self.assertIsNone(result)
-
-    def test_multi_role_access_any_matching_role_sufficient(self):
-        """A field with ['hr', 'finance'] is accessible by either role."""
-        from grapinator.schema import gql_class_constructor
-
-        attrs = [{
-            'name': 'budget_field',
-            'type': __import__('graphene').Float,
-            'desc': None,
-            'type_args': None,
-            'isqueryable': True,
-            'ishidden': False,
-            'isresolver': False,
-            'auth_roles': ['hr', 'finance'],
-            'deprecation_reason': None,
-        }]
-
-        cls = gql_class_constructor('TestFinType', 'db_Employees', attrs, 'employee_id')
-        resolver = getattr(cls, 'resolve_budget_field')
-        root = MagicMock()
-        root.budget_field = 500000.0
-
-        # 'finance' alone should suffice
-        info = self._make_info(roles=['finance'])
-        self.assertEqual(resolver(root, info), 500000.0)
-
-    def test_public_field_has_no_auth_resolver(self):
-        """Fields without gql_auth_roles must not have an auth resolver injected."""
+    def setUp(self):
+        import graphene
+        import grapinator.schema as schema_module
         from grapinator.schema import gql_class_constructor
 
         attrs = [{
             'name': 'public_name',
-            'type': __import__('graphene').String,
+            'type': graphene.String,
             'desc': None,
             'type_args': None,
             'isqueryable': True,
@@ -665,13 +553,123 @@ class TestFieldLevelRBAC(unittest.TestCase):
             'isresolver': False,
             'auth_roles': None,
             'deprecation_reason': None,
+        }, {
+            'name': 'secret_salary',
+            'type': graphene.Float,
+            'desc': None,
+            'type_args': None,
+            'isqueryable': True,
+            'ishidden': False,
+            'isresolver': False,
+            'auth_roles': ['hr'],
+            'deprecation_reason': None,
+        }, {
+            'name': 'calculated_secret',
+            'type': graphene.Int,
+            'desc': None,
+            'type_args': None,
+            'isqueryable': True,
+            'ishidden': False,
+            'isresolver': True,
+            'resolver_func': MagicMock(return_value=42),
+            'auth_roles': ['hr'],
+            'deprecation_reason': None,
         }]
-
-        cls = gql_class_constructor('TestPublicType', 'db_Employees', attrs, 'employee_id')
-        self.assertFalse(
-            hasattr(cls, 'resolve_public_name'),
-            'Public field must not have an injected auth resolver',
+        self.employee_type = gql_class_constructor(
+            'TestRoleAwareType', 'db_Employees', attrs, 'employee_id'
         )
+        query_type = type('TestHiddenRBACQuery', (graphene.ObjectType,), {
+            'employee': graphene.Field(self.employee_type),
+            'employees': graphene.Field(
+                graphene.String, secret_salary=graphene.Float()
+            ),
+        })
+        self.base_schema = graphene.Schema(query=query_type, auto_camelcase=False)
+        self.schema_module = schema_module
+        self.original_filter_roles = dict(schema_module._QUERY_FILTER_AUTH_ROLES)
+        schema_module._QUERY_FILTER_AUTH_ROLES['employees'] = {
+            'secret_salary': ['hr'],
+        }
+        self.addCleanup(self._restore_schema_globals)
+        self.schema_patcher = patch.object(schema_module, 'gql_schema', self.base_schema)
+        self.schema_patcher.start()
+        self.addCleanup(self.schema_patcher.stop)
+        schema_module._schema_for_role_key.cache_clear()
+
+    def _restore_schema_globals(self):
+        self.schema_module._QUERY_FILTER_AUTH_ROLES.clear()
+        self.schema_module._QUERY_FILTER_AUTH_ROLES.update(self.original_filter_roles)
+        self.schema_module._schema_for_role_key.cache_clear()
+
+    def test_matching_role_sees_output_and_filter_argument(self):
+        role_schema = self.schema_module.get_schema_for_roles(['hr'])
+        employee_fields = role_schema.get_type('TestRoleAwareType').fields
+        filter_args = role_schema.query_type.fields['employees'].args
+
+        self.assertIn('secret_salary', employee_fields)
+        self.assertIn('secret_salary', filter_args)
+
+    def test_nonmatching_roles_cannot_introspect_or_query_protected_field(self):
+        from graphql import parse, validate
+        role_schema = self.schema_module.get_schema_for_roles(['reader'])
+        employee_fields = role_schema.get_type('TestRoleAwareType').fields
+        filter_args = role_schema.query_type.fields['employees'].args
+
+        self.assertIn('public_name', employee_fields)
+        self.assertNotIn('secret_salary', employee_fields)
+        self.assertNotIn('calculated_secret', employee_fields)
+        self.assertNotIn('secret_salary', filter_args)
+
+        document = parse('{ employee { secret_salary } }')
+        errors = validate(role_schema, document)
+        self.assertTrue(any('secret_salary' in error.message for error in errors))
+
+
+class TestRoleSpecificGraphQLSchema(unittest.TestCase):
+    def setUp(self):
+        import grapinator.schema as schema_module
+        self.schema_module = schema_module
+        self.field_roles = patch.dict(
+            schema_module._FIELD_AUTH_ROLES,
+            {'Employees': {'birth_date': ['hr']}},
+        )
+        self.filter_roles = patch.dict(
+            schema_module._QUERY_FILTER_AUTH_ROLES,
+            {'employees': {'birth_date': ['hr']}},
+        )
+        self.field_roles.start()
+        self.filter_roles.start()
+        schema_module._schema_for_role_key.cache_clear()
+        self.addCleanup(self._restore_schema_cache)
+        self.addCleanup(self.filter_roles.stop)
+        self.addCleanup(self.field_roles.stop)
+
+    def _restore_schema_cache(self):
+        self.schema_module._schema_for_role_key.cache_clear()
+
+    def test_only_matching_role_sees_protected_output_and_filter_argument(self):
+        hr_schema = self.schema_module.get_schema_for_roles(['hr'])
+        reader_schema = self.schema_module.get_schema_for_roles(['reader'])
+        anonymous_schema = self.schema_module.get_schema_for_roles([])
+
+        self.assertIn('birth_date', hr_schema.get_type('Employees').fields)
+        self.assertIn('birth_date', hr_schema.query_type.fields['employees'].args)
+        for schema in (reader_schema, anonymous_schema):
+            self.assertNotIn('birth_date', schema.get_type('Employees').fields)
+            self.assertNotIn('birth_date', schema.query_type.fields['employees'].args)
+
+    def test_protected_field_selection_is_validation_error_without_role(self):
+        from graphql import parse, validate
+        hr_schema = self.schema_module.get_schema_for_roles(['hr'])
+        anonymous_schema = self.schema_module.get_schema_for_roles([])
+        document = parse(
+            '{ employees(birth_date: "1983-07-02", matches: "gt", '
+            'sort_by: "birth_date", sort_dir: "asc") '
+            '{ edges { node { birth_date } } } }'
+        )
+        self.assertEqual(validate(hr_schema, document), [])
+        errors = validate(anonymous_schema, document)
+        self.assertTrue(any('birth_date' in error.message for error in errors))
 
 
 # ===========================================================================

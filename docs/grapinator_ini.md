@@ -10,7 +10,9 @@ transparently decrypts any values that were encrypted with CryptoConfig (see [En
 
 By default Grapinator loads `grapinator/resources/grapinator.ini` bundled with the installed
 package.  Set the `GRAPINATOR_CONFIG` environment variable to the **absolute path of any ini
-file** to override this at startup without changing any code.
+file** to override this at startup without changing any code. For backward compatibility,
+`/resources/<file>.ini` is also treated as a path relative to the package's `resources/`
+directory when that absolute path does not exist.
 
 Grapinator derives the *resources directory* from the directory that contains the ini file and
 loads all other runtime files from that same directory:
@@ -47,56 +49,18 @@ At startup, Grapinator reads the encryption key from the `GQLAPI_CRYPT_KEY` envi
 and passes it to `CryptoConfigParser`.  When the parser encounters a value wrapped in `enc(...)`,
 it decrypts the inner token automatically before returning the value.
 
-### Generating a key
+## [GRAPHENE]
 
-CryptoConfig installs a helper command-line utility called `cryptocfg.py`.  Use the `--genkey`
-flag to generate a new Fernet encryption key:
+GraphQL schema configuration.
 
-```bash
-cryptocfg.py --genkey
-# Example output: jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=
-```
+| Setting | Type | Description |
+|---------|------|-------------|
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
 
-Store this key in a secure location (e.g. a secrets manager or `.env` file) and export it before
-starting the application:
-
-```bash
-export GQLAPI_CRYPT_KEY=<your-fernet-key>
-```
-
-> **Important:** The same key must be used for both encrypting values and running the application.
-> If the key changes, all encrypted values in the ini file must be re-encrypted.
-
-### Encrypting a password
-
-Use `cryptocfg.py` with the `-e` flag to encrypt a value.  Pass the plaintext string via `-i`
-and the key via `-p`:
-
-```bash
-cryptocfg.py -i 'my_db_password' -p 'jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=' -e
-# Example output: gAAAAABa8Ipc...
-```
-
-Place the output inside `enc(...)` in the ini file:
-
+**Example:**
 ```ini
-DB_PASSWORD = enc(gAAAAABa8Ipc...)
-```
-
-CryptoConfigParser recognises the `enc(...)` pattern (case-insensitive) and decrypts the value
-at read time.  Plain-text values are returned unchanged, so encryption is opt-in per value.
-
-### Decrypting a value (verification)
-
-To verify an encrypted value, use the `-d` flag:
-
-```bash
-cryptocfg.py -i 'gAAAAABa8Ipc...' -p 'jsZ9EkC3_XnP88UwIGQdFWpKPpeaD61RqJy8DE6lLYk=' -d
-# Output: my_db_password
-```
-
-### cryptocfg.py reference
-
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
 ```
 use: cryptocfg.py [options]
 where options include:
@@ -115,7 +79,7 @@ GraphQL schema configuration.
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`).  A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active ini file.  An absolute path is used as-is.  See [schema_docs.md](schema_docs.md) for the file format. |
+| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
 
 **Example:**
 ```ini
