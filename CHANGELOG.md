@@ -14,7 +14,11 @@ All notable changes to Grapinator
   a matching role can select, filter, and sort by them; other callers do not
   see the output field or filter argument and cannot sort by its name.
   Unauthenticated queries for hidden fields return the same validation message
-  as queries for nonexistent fields, without field-name suggestions.
+  as queries for nonexistent fields, without field-name suggestions. Unexpected
+  resolver and database errors return a generic message with a correlation ID.
+  Relay node failures return indistinguishable nulls; lookups preserve
+  role-schema metadata and enforce entity/row policies. Inaccessible sort names
+  are ignored like unknown names.
 - **Restore prior GraphQL query behavior** — Removed the new `[GRAPHENE]`
   depth, complexity, field-count, alias, page-size, regex-toggle, and
   persisted-query settings and their enforcement. Existing regex matching and

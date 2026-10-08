@@ -15,13 +15,16 @@ os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 
 import json
 import html
+import base64
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
 from . import context  # noqa: F401
 
 from graphql_server.flask.views import GraphQLView
+from graphql import ExecutionResult, GraphQLError, validate_schema
 from grapinator.app import app, FixedGraphQLView
+from grapinator.schema import ClientError
 from grapinator.middleware import SecurityHeadersMiddleware, CorsMiddleware
 from grapinator import settings
 
@@ -457,6 +460,25 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
         self.assertNotIn('errors', body)
         self.assertEqual(body['data']['__schema']['queryType']['name'], 'Query')
 
+    def test_role_schemas_preserve_graphene_types_and_validate(self):
+        import grapinator.schema as schema_module
+        for roles in ((), ('hr',), ('sales',)):
+            role_schema = schema_module.get_schema_for_roles(roles)
+            self.assertEqual(validate_schema(role_schema), [])
+            self.assertIsNotNone(role_schema.get_type('Employees').graphene_type)
+
+    def test_invalid_relay_node_ids_return_null_without_errors(self):
+        invalid_ids = (
+            'garbage',
+            base64.b64encode(b'UnknownType:1').decode('ascii'),
+        )
+        for global_id in invalid_ids:
+            with self.subTest(global_id=global_id):
+                response = self.client.post(self.endpoint, json={
+                    'query': '{ node(id: "' + global_id + '") { id } }',
+                })
+                self.assertEqual(response.get_json(), {'data': {'node': None}})
+
     def test_rbac_introspection_and_selection_follow_request_roles(self):
         import grapinator.schema as schema_module
         field_registry = schema_module._FIELD_AUTH_ROLES
@@ -531,6 +553,119 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
                 "Cannot query field 'foo' on type 'Employees'.",
             ],
         )
+
+        for roles, authenticated in (([], False), (['reader'], True)):
+            context_overrides = {
+                'grapinator.user_roles': roles,
+                'grapinator.authenticated': authenticated,
+            }
+            protected_argument = self.client.post(
+                self.endpoint,
+                json={'query': '{ employees(birth_date: "1980-01-01") '
+                                '{ edges { node { employee_id } } } }'},
+                environ_overrides=context_overrides,
+            ).get_json()
+            unknown_argument = self.client.post(
+                self.endpoint,
+                json={'query': '{ employees(absent_probe: "1980-01-01") '
+                                '{ edges { node { employee_id } } } }'},
+                environ_overrides=context_overrides,
+            ).get_json()
+            protected_messages = [
+                error['message'] for error in protected_argument['errors']
+            ]
+            unknown_messages = [
+                error['message'] for error in unknown_argument['errors']
+            ]
+            self.assertEqual(
+                [message.replace('birth_date', 'probe') for message in protected_messages],
+                [message.replace('absent_probe', 'probe') for message in unknown_messages],
+            )
+            self.assertFalse(any('Did you mean' in message for message in protected_messages))
+
+        hr_unknown_argument = self.client.post(
+            self.endpoint,
+            json={'query': '{ employees(birth_dat: "1980-01-01") '
+                            '{ edges { node { employee_id } } } }'},
+            environ_overrides={
+                'grapinator.user_roles': ['hr'],
+                'grapinator.authenticated': True,
+            },
+        ).get_json()
+        self.assertTrue(any(
+            'Did you mean' in error['message']
+            and 'birth_date' in error['message']
+            for error in hr_unknown_argument['errors']
+        ))
+
+
+class TestGraphQLErrorMasking(unittest.TestCase):
+
+    def setUp(self):
+        self.client = app.test_client()
+        self.endpoint = settings.FLASK_API_ENDPOINT
+
+    def test_invalid_regex_has_safe_message_at_http_boundary(self):
+        response = self.client.post(self.endpoint, json={
+            'query': '{ employees(first_name: "[", matches: "regex") '
+                     '{ edges { node { employee_id } } } }',
+        })
+        payload = response.get_json()
+        self.assertEqual(payload['errors'][0]['message'], 'Invalid regex pattern.')
+        for leaked_value in ('SELECT', 'BirthDate', 'HomePhone', 'parameters'):
+            self.assertNotIn(leaked_value, json.dumps(payload))
+
+    def test_database_errors_are_masked_at_http_boundary(self):
+        from sqlalchemy.exc import OperationalError
+        import grapinator.schema as schema_module
+
+        secret = 'SELECT BirthDate FROM Employees WHERE id=:employee_id'
+        original = OperationalError(secret, {'employee_id': 1}, RuntimeError('driver detail'))
+        with patch.object(
+            schema_module.MyConnectionField,
+            'get_query',
+            side_effect=original,
+        ):
+            with self.assertLogs('grapinator.app', level='ERROR') as captured:
+                response = self.client.post(self.endpoint, json={
+                    'query': '{ employees(first: 1) { edges { node { employee_id } } } }',
+                })
+
+        payload = response.get_json()
+        error = payload['errors'][0]
+        self.assertEqual(error['message'], 'Internal server error.')
+        correlation_id = error['extensions']['correlation_id']
+        self.assertIn(correlation_id, captured.output[0])
+        self.assertIn(secret, '\n'.join(captured.output))
+        self.assertNotIn(secret, json.dumps(payload))
+
+    def test_unexpected_errors_are_masked_and_logged_with_correlation_id(self):
+        view = object.__new__(FixedGraphQLView)
+        secret = 'SELECT BirthDate, HomePhone FROM Employees WHERE id=:parameters'
+        original = RuntimeError(secret)
+        result = ExecutionResult(errors=[GraphQLError(secret, original_error=original)])
+
+        with self.assertLogs('grapinator.app', level='ERROR') as captured:
+            response = view.process_result(None, result)
+
+        error = response['errors'][0]
+        self.assertEqual(error['message'], 'Internal server error.')
+        correlation_id = error['extensions']['correlation_id']
+        self.assertTrue(correlation_id)
+        self.assertIn(correlation_id, captured.output[0])
+        self.assertIn(secret, '\n'.join(captured.output))
+        response_text = json.dumps(response)
+        for leaked_value in ('SELECT', 'BirthDate', 'HomePhone', 'parameters'):
+            self.assertNotIn(leaked_value, response_text)
+
+    def test_client_errors_keep_their_safe_message(self):
+        view = object.__new__(FixedGraphQLView)
+        error = GraphQLError(
+            'Invalid regex pattern.',
+            original_error=ClientError('Invalid regex pattern.'),
+        )
+        response = view.process_result(None, ExecutionResult(errors=[error]))
+        self.assertEqual(response['errors'][0]['message'], 'Invalid regex pattern.')
 
 
 if __name__ == '__main__':

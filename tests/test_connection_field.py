@@ -18,7 +18,7 @@ from sqlalchemy import Column, Integer, String, Date, create_engine, event
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from graphene_sqlalchemy import SQLAlchemyConnectionField
 
-from grapinator.schema import MyConnectionField
+from grapinator.schema import ClientError, MyConnectionField, _SORTABLE_FIELDS
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +247,14 @@ class TestRelayArgsSuppressed(unittest.TestCase):
 
 class TestSorting(unittest.TestCase):
 
+    def setUp(self):
+        original = _SORTABLE_FIELDS.get(_Item.__name__)
+        _SORTABLE_FIELDS[_Item.__name__] = {'age', 'name', 'dob'}
+        self.addCleanup(
+            lambda: _SORTABLE_FIELDS.pop(_Item.__name__, None)
+            if original is None else _SORTABLE_FIELDS.__setitem__(_Item.__name__, original)
+        )
+
     def test_sort_ascending_by_age(self):
         query = _run({'sort_by': 'age', 'sort_dir': 'asc'})
         ages = [r.age for r in query.all()]
@@ -268,30 +276,14 @@ class TestSorting(unittest.TestCase):
         ages = [r.age for r in query.all()]
         self.assertEqual(ages, sorted(ages))
 
-    def test_rbac_column_is_not_sortable(self):
-        """A role-protected column cannot be used through the sort_by string arg."""
-        from grapinator.schema import (
-            MyConnectionField, _RESTRICTED_SORT_FIELDS, _SORTABLE_FIELDS,
-        )
-        original = _SORTABLE_FIELDS.get(_Item.__name__)
-        original_restricted = _RESTRICTED_SORT_FIELDS.get(_Item.__name__)
+    def test_non_allowlisted_sort_is_ignored(self):
+        """A hidden/non-queryable field is ignored like an unknown sort name."""
         _SORTABLE_FIELDS[_Item.__name__] = {'name'}
-        _RESTRICTED_SORT_FIELDS[_Item.__name__] = {'age'}
-        self.addCleanup(
-            lambda: _SORTABLE_FIELDS.pop(_Item.__name__, None)
-            if original is None else _SORTABLE_FIELDS.__setitem__(_Item.__name__, original)
-        )
-        self.addCleanup(
-            lambda: _RESTRICTED_SORT_FIELDS.pop(_Item.__name__, None)
-            if original_restricted is None else _RESTRICTED_SORT_FIELDS.__setitem__(
-                _Item.__name__, original_restricted
-            )
-        )
         with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
-            with self.assertRaisesRegex(ValueError, 'cannot be used for sorting'):
-                MyConnectionField.get_query(_Item, MagicMock(), sort_by='age')
+            query = MyConnectionField.get_query(_Item, MagicMock(), sort_by='age')
+        self.assertEqual(_ids(query), [1, 2, 3, 4])
 
-    def test_protected_sort_requires_matching_role(self):
+    def test_protected_sort_is_ignored_without_matching_role(self):
         from grapinator.schema import MyConnectionField, _SORT_FIELD_AUTH_ROLES
         original = _SORT_FIELD_AUTH_ROLES.get(_Item.__name__)
         _SORT_FIELD_AUTH_ROLES[_Item.__name__] = {'age': ['hr']}
@@ -304,8 +296,11 @@ class TestSorting(unittest.TestCase):
         info = MagicMock()
         info.context = {'user_roles': ['reader']}
         with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()):
-            with self.assertRaisesRegex(ValueError, 'required role'):
-                MyConnectionField.get_query(_Item, info, sort_by='age')
+            query = MyConnectionField.get_query(_Item, info, sort_by='age')
+            unknown_sort_query = MyConnectionField.get_query(
+                _Item, info, sort_by='unknown'
+            )
+        self.assertEqual(_ids(query), _ids(unknown_sort_query))
 
     def test_matching_role_can_filter_and_sort_protected_column(self):
         from grapinator.schema import (
@@ -349,7 +344,7 @@ class TestSorting(unittest.TestCase):
         info = MagicMock()
         info.context = {'user_roles': ['reader']}
         with patch.object(SQLAlchemyConnectionField, 'get_query', return_value=_base_query()) as base_query:
-            with self.assertRaisesRegex(ValueError, 'required role'):
+            with self.assertRaisesRegex(ClientError, 'Invalid filter argument'):
                 MyConnectionField.get_query(_Item, info, age=25, matches='gt')
         base_query.assert_not_called()
 
