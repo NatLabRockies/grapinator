@@ -13,6 +13,8 @@ All notable changes to Grapinator
   `gql_auth_roles` are exposed in a role-specific GraphQL schema: callers with
   a matching role can select, filter, and sort by them; other callers do not
   see the output field or filter argument and cannot sort by its name.
+  Unauthenticated queries for hidden fields return the same validation message
+  as queries for nonexistent fields, without field-name suggestions.
 - **Restore prior GraphQL query behavior** — Removed the new `[GRAPHENE]`
   depth, complexity, field-count, alias, page-size, regex-toggle, and
   persisted-query settings and their enforcement. Existing regex matching and

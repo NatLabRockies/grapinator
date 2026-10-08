@@ -23,6 +23,8 @@ import json
 import logging
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
+from graphql import GraphQLError, specified_rules
+from graphql.validation.rules.fields_on_correct_type import FieldsOnCorrectTypeRule
 from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
@@ -33,6 +35,27 @@ from grapinator.security import set_request_context
 from grapinator.schema import get_schema_for_roles, gql_schema
 
 logger = logging.getLogger(__name__)
+
+
+class _UnauthenticatedFieldsOnCorrectTypeRule(FieldsOnCorrectTypeRule):
+    """Reject unknown fields without suggesting other fields to anonymous users."""
+
+    def enter_field(self, node, *_args):
+        parent_type = self.context.get_parent_type()
+        if parent_type and not self.context.get_field_def():
+            self.report_error(
+                GraphQLError(
+                    f"Cannot query field '{node.name.value}' on type '{parent_type}'.",
+                    node,
+                )
+            )
+
+
+_UNAUTHENTICATED_VALIDATION_RULES = tuple(
+    _UnauthenticatedFieldsOnCorrectTypeRule
+    if rule is FieldsOnCorrectTypeRule else rule
+    for rule in specified_rules
+)
 
 
 class FixedGraphQLView(GraphQLView):
@@ -182,6 +205,11 @@ class FixedGraphQLView(GraphQLView):
         allowed_operation_types,
     ):
         set_request_context(db_session(), context)
+        validation_rules = (
+            _UNAUTHENTICATED_VALIDATION_RULES
+            if not context.get('authenticated', False)
+            else None
+        )
         return execute_sync(
             schema=get_schema_for_roles(context.get('user_roles', [])),
             query=request_data.document or request_data.query,
@@ -191,6 +219,7 @@ class FixedGraphQLView(GraphQLView):
             operation_name=request_data.operation_name,
             allowed_operation_types=allowed_operation_types,
             operation_extensions=request_data.extensions,
+            validation_rules=validation_rules,
         )
 
 

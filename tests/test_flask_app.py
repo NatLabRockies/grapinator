@@ -516,6 +516,22 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
         self.assertNotIn('birth_date', reader_employee_fields)
         self.assertNotIn('birth_date', reader_employee_args)
 
+        hidden_field_response = self.client.post(
+            self.endpoint,
+            json={'query': '{ employees { edges { node { birth_date foo } } } }'},
+            environ_overrides={
+                'grapinator.user_roles': [],
+                'grapinator.authenticated': False,
+            },
+        ).get_json()
+        self.assertEqual(
+            [error['message'] for error in hidden_field_response['errors']],
+            [
+                "Cannot query field 'birth_date' on type 'Employees'.",
+                "Cannot query field 'foo' on type 'Employees'.",
+            ],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
