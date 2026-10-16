@@ -844,6 +844,132 @@ query ProductsWithoutCategory {
 
 ---
 
+## Typed `where` Filter Tests (v2.2.0+)
+
+### 35. Products Containing Cheese (where)
+`where` equivalent of query 18; results should match query 18.
+```graphql
+query ProductsContainingCheeseWhere {
+  products(where: { product_name: { contains: "Cheese" } }) {
+    edges {
+      node {
+        product_id
+        product_name
+        category_id
+        unit_price
+      }
+    }
+  }
+}
+```
+
+### 36. Customers Starting With A (where)
+`where` equivalent of query 19; results should match query 19.
+```graphql
+query CustomersStartingWithAWhere {
+  customers(where: { company_name: { startsWith: "A" } }) {
+    edges {
+      node {
+        customer_id
+        company_name
+        contact_name
+        city
+        country
+      }
+    }
+  }
+}
+```
+
+### 37. Expensive Products (where)
+`where` equivalent of query 20; results should match query 20.
+```graphql
+query ExpensiveProductsWhere {
+  products(where: { unit_price: { gt: 50 } }) {
+    edges {
+      node {
+        product_id
+        product_name
+        unit_price
+      }
+    }
+  }
+}
+```
+
+### 38. Two Employees by ID (where in)
+Test `in` lists, which the legacy arguments cannot express.
+```graphql
+query EmployeesByIdsWhere {
+  employees(where: { employee_id: { in: [1, 5] } }, sort_by: "employee_id") {
+    edges {
+      node {
+        employee_id
+        first_name
+        last_name
+      }
+    }
+  }
+}
+```
+
+### 39. Orders Without Shipped Date (where isNull)
+`where` equivalent of query 33 that actually filters on NULL.
+```graphql
+query UnshippedOrdersWhere {
+  orders(where: { shipped_date: { isNull: true } }, sort_by: "order_date", sort_dir: "desc") {
+    edges {
+      node {
+        order_id
+        order_date
+        required_date
+        shipped_date
+      }
+    }
+  }
+}
+```
+
+### 40. Products Without Category (where isNull)
+`where` equivalent of query 34 that actually filters on NULL.
+```graphql
+query ProductsWithoutCategoryWhere {
+  products(where: { category_id: { isNull: true } }) {
+    edges {
+      node {
+        product_id
+        product_name
+        category_id
+      }
+    }
+  }
+}
+```
+
+### 41. Orders in a Date Window Outside the USA (where and/not)
+Test date ranges combined with `not`.
+```graphql
+query OrdersWindowWhere {
+  orders(
+    where: {
+      order_date: { gte: "2017-01-01T00:00:00", lt: "2017-02-01T00:00:00" }
+      not: { ship_country: { eq: "USA" } }
+    }
+    sort_by: "order_date"
+  ) {
+    edges {
+      node {
+        order_id
+        order_date
+        ship_country
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Test Execution Notes
 
 ### Expected Results Validation
@@ -852,6 +978,9 @@ query ProductsWithoutCategory {
 - **Query 4**: Should return 8 categories
 - **Query 9**: Should return 13 US customers
 - **Query 27**: Should return 4 regions
+- **Queries 35-37**: Should return the same rows as queries 18-20
+- **Query 38**: Should return employees 1 and 5
+- **Query 39**: Should return only orders whose shipped_date is null (query 33's legacy `shipped_date: null` is ignored and returns every order)
 
 ### Performance Benchmarks
 - Single entity queries should complete in < 100ms

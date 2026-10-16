@@ -21,12 +21,15 @@ calling ``main()`` directly.
 
 import json
 import logging
+import re
 import uuid
 from flask import Flask, Request, Response, g, render_template_string, request as flask_request
 from markupsafe import Markup
 from graphql import ExecutionResult, GraphQLError, specified_rules
 from graphql.validation.rules.fields_on_correct_type import FieldsOnCorrectTypeRule
 from graphql.validation.rules.known_argument_names import KnownArgumentNamesRule
+from graphql.validation.rules.values_of_correct_type import ValuesOfCorrectTypeRule
+from graphql import get_named_type, is_input_object_type
 from graphql_server import execute_sync
 from graphql_server.flask.views import GraphQLView
 from graphql_server.http import GraphQLRequestData
@@ -38,11 +41,68 @@ from grapinator.schema import (
     ClientError,
     _FIELD_AUTH_ROLES,
     _QUERY_FILTER_AUTH_ROLES,
+    _WHERE_FIELD_AUTH_ROLES,
     get_schema_for_roles,
     gql_schema,
 )
 
 logger = logging.getLogger(__name__)
+
+# graphql-core's message for an unknown input-object field, used to remove
+# suggestions from variable coercion errors (which bypass validation rules).
+_UNKNOWN_INPUT_FIELD = re.compile(
+    r"Field '(?P<field>[^']*)' is not defined by type '(?P<type>[^']*)'\.(?P<hint> Did you mean [^?]*\?)"
+)
+
+
+def _hides_input_field(context, type_name):
+    """
+    Return True when unknown-field errors on *type_name* must omit suggestions.
+
+    Unauthenticated callers never get suggestions.  Other callers lose them on
+    a filter type that has columns hidden from them, so a protected column and
+    a nonexistent one produce the same message.
+    """
+    if not context.get('authenticated', False):
+        return True
+    user_roles = set(context.get('user_roles', []))
+    return any(
+        not user_roles.intersection(required_roles)
+        for required_roles in _WHERE_FIELD_AUTH_ROLES.get(type_name, {}).values()
+    )
+
+
+def _strip_hidden_input_suggestions(context, result):
+    """Remove field-name suggestions that could reveal protected filter columns."""
+    if not result.errors:
+        return result
+    errors = []
+    changed = False
+    for error in result.errors:
+        def drop_hint(match):
+            if _hides_input_field(context, match['type']):
+                return match.group(0)[: -len(match['hint'])]
+            return match.group(0)
+
+        message = _UNKNOWN_INPUT_FIELD.sub(drop_hint, error.message)
+        if message == error.message:
+            errors.append(error)
+            continue
+        changed = True
+        errors.append(GraphQLError(
+            message,
+            nodes=error.nodes,
+            source=error.source,
+            positions=error.positions,
+            path=error.path,
+            original_error=error.original_error,
+            extensions=error.extensions,
+        ))
+    if not changed:
+        return result
+    return ExecutionResult(
+        data=result.data, errors=errors, extensions=result.extensions,
+    )
 
 
 def _validation_rules_for_context(context):
@@ -100,14 +160,32 @@ def _validation_rules_for_context(context):
                 return
             super().enter_argument(node, *args)
 
-    return tuple(
-        RoleAwareFieldsOnCorrectTypeRule
-        if rule is FieldsOnCorrectTypeRule
-        else RoleAwareKnownArgumentNamesRule
-        if rule is KnownArgumentNamesRule
-        else rule
-        for rule in specified_rules
-    )
+    class RoleAwareValuesOfCorrectTypeRule(ValuesOfCorrectTypeRule):
+        """Report protected and unknown ``where`` columns identically."""
+
+        def enter_object_field(self, node, *args):
+            parent_type = get_named_type(self.context.get_parent_input_type())
+            if (
+                not self.context.get_input_type()
+                and is_input_object_type(parent_type)
+                and _hides_input_field(context, parent_type.name)
+            ):
+                self.report_error(
+                    GraphQLError(
+                        f"Field '{node.name.value}' is not defined by type "
+                        f"'{parent_type.name}'.",
+                        node,
+                    )
+                )
+                return
+            super().enter_object_field(node, *args)
+
+    replacements = {
+        FieldsOnCorrectTypeRule: RoleAwareFieldsOnCorrectTypeRule,
+        KnownArgumentNamesRule: RoleAwareKnownArgumentNamesRule,
+        ValuesOfCorrectTypeRule: RoleAwareValuesOfCorrectTypeRule,
+    }
+    return tuple(replacements.get(rule, rule) for rule in specified_rules)
 
 
 class FixedGraphQLView(GraphQLView):
@@ -290,7 +368,7 @@ class FixedGraphQLView(GraphQLView):
     ):
         set_request_context(db_session(), context)
         validation_rules = _validation_rules_for_context(context)
-        return execute_sync(
+        result = execute_sync(
             schema=get_schema_for_roles(context.get('user_roles', [])),
             query=request_data.document or request_data.query,
             root_value=root_value,
@@ -301,6 +379,7 @@ class FixedGraphQLView(GraphQLView):
             operation_extensions=request_data.extensions,
             validation_rules=validation_rules,
         )
+        return _strip_hidden_input_suggestions(context, result)
 
 
 # ---------------------------------------------------------------------------

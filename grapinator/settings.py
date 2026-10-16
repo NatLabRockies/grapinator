@@ -76,6 +76,17 @@ from sqlalchemy import (
     ,UnicodeText
     )
 
+def _positive_int_option(name, raw_value):
+    """Parse a strictly positive integer INI value or raise RuntimeError."""
+    try:
+        value = int(str(raw_value).strip())
+    except ValueError:
+        raise RuntimeError(f'{name} must be a positive integer.') from None
+    if value <= 0:
+        raise RuntimeError(f'{name} must be a positive integer.')
+    return value
+
+
 class Settings(object):
     """
     Runtime configuration holder populated from an encrypted INI file.
@@ -100,7 +111,9 @@ class Settings(object):
     **SQLALCHEMY** — Database connection components assembled into
     ``SQLALCHEMY_DATABASE_URI`` during ``__init__``.
 
-    **GRAPHENE** — Path to the schema dictionary file.
+    **GRAPHENE** — Path to the schema dictionary file, the optional
+    ``MAX_PAGE_SIZE`` clamp, and the ``MAX_IN_LIST_SIZE`` cap for ``where``
+    ``in`` / ``notIn`` lists.
     """
 
     # WSGI socket / TLS settings.
@@ -153,6 +166,11 @@ class Settings(object):
 
     # Graphene schema file path
     GQL_SCHEMA = None
+    # Optional upper bound for first/last on root connections; None = unlimited.
+    MAX_PAGE_SIZE = None
+    # Maximum values in a where `in` / `notIn` list.  Oracle rejects IN lists
+    # longer than 1000 (ORA-01795), so larger values are refused at startup.
+    MAX_IN_LIST_SIZE = 500
 
     # Authentication / JWT settings (all optional; default to auth off)
     AUTH_MODE = 'off'              # 'off' | 'mixed' | 'required'
@@ -412,6 +430,19 @@ class Settings(object):
 
             # load GRAPHENE section
             self.GQL_SCHEMA = properties.get('GRAPHENE', 'GQL_SCHEMA')
+            if properties.has_option('GRAPHENE', 'MAX_PAGE_SIZE'):
+                self.MAX_PAGE_SIZE = _positive_int_option(
+                    'MAX_PAGE_SIZE', properties.get('GRAPHENE', 'MAX_PAGE_SIZE')
+                )
+            if properties.has_option('GRAPHENE', 'MAX_IN_LIST_SIZE'):
+                self.MAX_IN_LIST_SIZE = _positive_int_option(
+                    'MAX_IN_LIST_SIZE', properties.get('GRAPHENE', 'MAX_IN_LIST_SIZE')
+                )
+                if self.MAX_IN_LIST_SIZE > 1000:
+                    raise RuntimeError(
+                        'MAX_IN_LIST_SIZE must be 1000 or less (Oracle limits '
+                        'IN lists to 1000 values).'
+                    )
 
             # load AUTH section (entirely optional — defaults are set above)
             if properties.has_section('AUTH'):
@@ -487,6 +518,10 @@ class Settings(object):
                 self.WSGI_SOCKET_HOST, self.WSGI_SOCKET_PORT,
                 'on' if self.WSGI_SSL_CERT else 'off',
                 self.CORS_ENABLE,
+            )
+            logger.debug(
+                'Settings: MAX_PAGE_SIZE=%s MAX_IN_LIST_SIZE=%s',
+                self.MAX_PAGE_SIZE, self.MAX_IN_LIST_SIZE,
             )
             logger.debug(
                 'Settings: DB_TYPE=%s AUTH_MODE=%s GRAPHIQL_ACCESS=%s',

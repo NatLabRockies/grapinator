@@ -18,3 +18,9 @@ curl -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"query":"{ employees(birth_date: \"1983-07-02\", matches: \"gt\", sort_by: \"birth_date\") { edges { node { employee_id first_name birth_date } } } }"}' \
     http://localhost:8443/northwind/gql
+
+# The same filter with the typed where argument (v2.2.0+).
+curl -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{ employees(where: {birth_date: {gt: \"1983-07-02T00:00:00\"}}, sort_by: \"birth_date\") { edges { node { employee_id first_name birth_date } } } }"}' \
+    http://localhost:8443/northwind/gql

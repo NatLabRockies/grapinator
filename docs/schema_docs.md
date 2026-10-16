@@ -33,6 +33,21 @@ In simple terms the grapinator schema is a list of Python dictionaries.  Each di
             fields available to everyone.
     - **db_col_name:** Database column name.  
     - **db_type:** SQLAlchemy database type
+
+#### Filterable columns and `where`
+
+Each entity connection gets a `where` argument of type `<GQL_CLASS_NAME>Filter`
+(for example `EmployeesFilter`). It contains one field per column that is
+queryable (`gql_isqueryable` not `False`), not hidden (`gql_ishidden`), and not
+a resolver (`gql_isresolver`), which are the same columns that get the
+deprecated per-column filter arguments. Each column uses a `<Scalar>Filter`
+type derived from its `gql_type` (`StringFilter`, `IntFilter`, `FloatFilter`,
+`DateTimeFilter`, ...). Columns with `gql_auth_roles` follow the same role
+rules inside `where` as for the other filter arguments.
+
+The schema fails to build if a filterable column is named `and`, `or`, or
+`not`, or if a generated filter type name collides with another type (for
+example a `GQL_CLASS_NAME` of `String`, or a class named `EmployeesFilter`).
 - **RELATIONSHIPS:** List of dictionaries containing SQLAlchemy class model [relationships](https://docs.sqlalchemy.org/en/13/orm/relationship_api.html#sqlalchemy.orm.relationship)
     - **rel_name:** SQLAlchemy relationship name
     - **rel_class_name:** SQLAlchemy model class name
@@ -464,7 +479,8 @@ whether the entity even exists.
 that may use the field. GraphQL execution and introspection use a schema selected from the
 validated request roles: a caller with a matching role sees the field and may select, filter,
 and sort by it; a caller without one does not see the field in GraphiQL or introspection, and
-queries using the field or its filter argument fail validation. Attempts to sort by a protected
+queries using the field, its filter argument, or the field inside `where` fail validation with
+the same message as a nonexistent field. Attempts to sort by a protected
 field without the role are rejected before the database query is run. Use `AUTH_ROLES` when the
 entire entity should be role-gated.
 

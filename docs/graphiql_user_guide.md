@@ -112,7 +112,128 @@ All Grapinator queries follow the same Relay connection pattern:
 
 ---
 
-## Filtering Results
+## Filtering with `where`
+
+Every entity connection accepts a typed `where` argument (since v2.2.0). Each
+key in `where` is a filterable column, and each column takes an object of
+operators. Its type is `<Entity>Filter` (for example `EmployeesFilter`), and
+each column uses the filter type for its scalar (`StringFilter`, `IntFilter`,
+`FloatFilter`, `DateTimeFilter`, and so on). Use auto-complete or the Docs
+panel to see the columns and operators available to you.
+
+```graphql
+{
+  employees(where: {
+    region:    { isNull: false }
+    hire_date: { gte: "2013-01-01T00:00:00" }
+    or: [
+      { city: { in: ["Seattle", "Redmond"] } }
+      { last_name: { startsWith: "Da" } }
+    ]
+  }, sort_by: "last_name") {
+    edges { node { employee_id last_name city hire_date } }
+  }
+}
+```
+
+### Operators
+
+| Operator | Applies to | SQL |
+|---|---|---|
+| `eq` / `ne` | all scalars | `=` / `!=` (exact, case-sensitive for strings) |
+| `in` / `notIn` | all scalars except Boolean | `IN (...)` / `NOT IN (...)` |
+| `gt` / `gte` / `lt` / `lte` | Int, Float, Date, DateTime | `>` / `>=` / `<` / `<=` |
+| `contains` / `startsWith` / `endsWith` | String | case-insensitive `ILIKE`; `%` and `_` in the value are matched literally |
+| `isNull` | all scalars | `true` → `IS NULL`; `false` → `IS NOT NULL` |
+
+There is no regular-expression operator in `where`. `matches: "regex"` is
+still available through the deprecated arguments described below.
+
+### Combining conditions
+
+- Keys in one filter object, and operators in one column object, are combined with AND.
+- `and: [...]` requires every filter in the list to match; `or: [...]` requires at least one.
+- `not: {...}` negates a filter.
+- These can be nested up to 8 levels deep, with at most 100 operator conditions in total.
+
+```graphql
+# Two employee ids: in, or the equivalent or form
+{ employees(where: { employee_id: { in: [1, 5] } }) { edges { node { employee_id } } } }
+{ employees(where: { or: [{ employee_id: { eq: 1 } }, { employee_id: { eq: 5 } }] }) { edges { node { employee_id } } } }
+
+# Everyone outside London
+{ employees(where: { not: { city: { eq: "London" } } }) { edges { node { employee_id city } } } }
+```
+
+`where` also works with variables:
+
+```graphql
+query Employees($filter: EmployeesFilter) {
+  employees(where: $filter) { edges { node { employee_id last_name } } }
+}
+```
+
+```json
+{ "filter": { "city": { "eq": "London" }, "employee_id": { "gt": 5 } } }
+```
+
+### Null and list semantics
+
+- Omitting `where`, passing `where: null`, or passing `where: {}` applies no filter.
+- `and: []` matches every row; `or: []` matches no rows.
+- `in: []` matches no rows; `notIn: []` matches every row.
+- Use `isNull` to match NULL values. An explicit `null` for any other operator
+  (for example `eq: null`) is rejected with an error that points to `isNull`,
+  and `null` is not allowed inside `in` / `notIn` lists.
+- SQL comparisons never match NULL: `ne: 5` does not return rows where the
+  column is NULL. To include them, use `or: [{ ne: 5 }, { isNull: true }]` on that column,
+  for example `or: [{ reports_to: { ne: 2 } }, { reports_to: { isNull: true } }]`.
+- `in` / `notIn` lists are limited to `MAX_IN_LIST_SIZE` values (default 500);
+  longer lists return `List exceeds the maximum of N values.`
+- Each operator takes the column's own type, so `employee_id: { in: ["1"] }`
+  is a validation error.
+
+### What `where` cannot express
+
+- Filters on related entities (for example employees whose territory is in a given region).
+- Comparisons between two columns.
+- Aggregates such as counts or `GROUP BY`.
+- Resolver, hidden, and non-queryable fields; these cannot be filtered.
+
+### Access control
+
+`where` follows the same rules as the other filters. Columns restricted with
+`gql_auth_roles` appear in `<Entity>Filter` only for callers with a matching
+role. For other callers, a restricted column produces the same error as a
+column that does not exist, and entity- and row-level access rules still limit
+the results whatever `or` / `not` conditions are used.
+
+### Migrating from the deprecated arguments
+
+| Deprecated | `where` equivalent |
+|---|---|
+| `employees(city: "Sea")` (default `contains`) | `employees(where: {city: {contains: "Sea"}})` |
+| `employees(city: "Seattle", matches: "exact")` | `employees(where: {city: {eq: "Seattle"}})` |
+| `matches: "startswith"` / `"endswith"` | `startsWith` / `endsWith` |
+| `matches: "gt"` / `"gte"` / `"lt"` / `"lte"` / `"ne"` | `gt` / `gte` / `lt` / `lte` / `ne` |
+| `orders(order_date: "1997-01-01")` (dates default to `>=`) | `orders(where: {order_date: {gte: "1997-01-01T00:00:00"}})` |
+| `employees(city: "Seattle", country: "UK", logic: "or")` | `employees(where: {or: [{city: {contains: "Seattle"}}, {country: {contains: "UK"}}]})` |
+| `matches: "regex"` | no equivalent; keep using the deprecated arguments |
+
+Note that the deprecated per-column arguments apply a single `matches` mode to
+every column, while `where` lets each column use its own operator.
+
+---
+
+## Filtering Results (deprecated arguments)
+
+> **Deprecated:** the per-column arguments, `matches`, and `logic` still work
+> exactly as before, but are marked deprecated in the schema and will be
+> removed in a future major release. Use [`where`](#filtering-with-where)
+> instead. `sort_by`, `sort_dir`, and pagination arguments are not deprecated.
+>
+> If you pass both, the result is `(deprecated conditions joined by logic) AND
+> (where conditions)`. `logic` applies only to the deprecated arguments.
 
 Pass field values as arguments to filter results. Multiple fields are combined with AND logic by default.
 
@@ -209,9 +330,10 @@ Use `sort_by` and `sort_dir` to control result order.
 
 ---
 
-## Combining Filters with OR Logic
+## Combining Filters with OR Logic (deprecated)
 
 By default multiple filters are combined with AND. Use `logic: "or"` to switch to OR.
+New queries should use `where` with `or: [...]` instead.
 
 ```graphql
 {
@@ -233,6 +355,12 @@ By default multiple filters are combined with AND. Use `logic: "or"` to switch t
 ## Pagination
 
 Grapinator uses Relay cursor-based pagination. Use `first` to limit the number of results. The `pageInfo` block provides cursor values for fetching subsequent pages.
+
+> **Page size limit:** if the server sets `MAX_PAGE_SIZE`, larger `first` or
+> `last` values are silently reduced to that limit, and a query with neither
+> returns at most that many rows. No error is returned, so **always check
+> `pageInfo.hasNextPage`** (or `hasPreviousPage` with `last`) and continue
+> with the `endCursor` to read the remaining rows.
 
 The **Variables** tab at the bottom of the editor panel lets you pass JSON variable values into parameterised queries instead of hardcoding them directly.
 
@@ -379,6 +507,10 @@ Press `Ctrl+Space` (or `Cmd+Space`) at any point in the query editor to see avai
 | `Cannot query field "X" on type "Y"` | Field name is wrong or does not exist — check spelling in the Docs panel |
 | `Unknown argument "X"` | Argument name is wrong — use auto-complete to see valid arguments |
 | `Expected type String, found Int` | Value type mismatch — wrap string values in double quotes |
+| `Field "X" is not defined by type "EmployeesFilter"` | Column name in `where` is wrong, not filterable, or not available to your role |
+| `Null is not allowed for 'eq'; use isNull to match null values.` | Use `{ isNull: true }` instead of `{ eq: null }` |
+| `List exceeds the maximum of N values.` | Split the `in` / `notIn` list across several queries |
+| `Filter nesting exceeds the maximum depth of 8.` / `Filter exceeds the maximum of 100 conditions.` | Simplify the `where` tree, for example by using `in` instead of many `or` branches |
 | Empty `edges` array | Query ran successfully but no rows matched the filter |
 | Network error / cannot connect | Server is not running or the URL is incorrect |
 

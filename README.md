@@ -17,6 +17,8 @@ Grapinator is a dynamic api generator based on the [Graphene](http://graphene-py
 - **Runtime configuration:** Runtime configuration is managaged using the [grapinator.ini](grapinator/resources/grapinator.ini) file. 
 - **Flexable GraphQL schema definition:** All Graphene and database information is provided by a [Python dictionary](grapinator/resources/schema.dct) that you change for your needs. Please review the [schema documentation](docs/schema_docs.md).
 - **Additional query logic:** More robust query logic has been added giving the api consumer more options to query for specific data.
+- **Typed `where` filters:** Every entity connection accepts a `where` argument with per-column operators (`eq`, `in`, `gt`, `contains`, `isNull`, ...) combined with `and` / `or` / `not`. See the [GraphiQL user guide](docs/graphiql_user_guide.md#filtering-with-where). The older per-column filter arguments, `matches`, and `logic` still work but are deprecated.
+- **Optional page-size limit:** Set `MAX_PAGE_SIZE` in `[GRAPHENE]` to clamp `first` / `last` on every connection. See [grapinator_ini.md](docs/grapinator_ini.md).
 
 ## Licensing
 This project is licensed under the [BSD 3-clause](License.txt) license.

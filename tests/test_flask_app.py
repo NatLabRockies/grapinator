@@ -496,7 +496,8 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
 
         introspection_query = (
             '{ employeeType: __type(name: "Employees") { fields { name } } '
-            'queryType: __type(name: "Query") { fields { name args { name } } } }'
+            'queryType: __type(name: "Query") { fields { name '
+            'args(includeDeprecated: true) { name } } } }'
         )
         hr_response = self.client.post(
             self.endpoint,

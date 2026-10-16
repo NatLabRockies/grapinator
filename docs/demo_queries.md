@@ -308,3 +308,118 @@ The playground GraphiQL interface is available at [http://localhost:8443/northwi
   }
 }
 ```
+
+---
+
+## Filtering with `where` (v2.2.0+)
+
+The queries below use the typed `where` argument. See
+[graphiql_user_guide.md](graphiql_user_guide.md#filtering-with-where) for the
+full operator list and null/list semantics.
+
+### Orders in a date range shipped to Germany or France
+
+```graphql
+{
+  orders(
+    where: {
+      order_date: { gte: "2017-01-01T00:00:00", lt: "2017-02-01T00:00:00" }
+      ship_country: { in: ["Germany", "France"] }
+    }
+    sort_by: "order_date"
+  ) {
+    edges {
+      node {
+        order_id
+        order_date
+        ship_country
+      }
+    }
+  }
+}
+```
+
+### Two employees by ID
+
+```graphql
+{
+  employees(where: { employee_id: { in: [1, 5] } }) {
+    edges {
+      node {
+        employee_id
+        first_name
+        last_name
+      }
+    }
+  }
+}
+```
+
+### German customers in Berlin, or whose company name starts with "Ma"
+
+```graphql
+{
+  customers(
+    where: {
+      or: [
+        { city: { eq: "Berlin" }, country: { eq: "Germany" } }
+        { company_name: { startsWith: "ma" } }
+      ]
+    }
+    sort_by: "company_name"
+  ) {
+    edges {
+      node {
+        customer_id
+        company_name
+        region
+        country
+      }
+    }
+  }
+}
+```
+
+### Products under $10 that are not in category 1
+
+```graphql
+{
+  products(
+    where: {
+      unit_price: { lt: 10 }
+      not: { category_id: { eq: 1 } }
+    }
+    sort_by: "unit_price"
+  ) {
+    edges {
+      node {
+        product_name
+        unit_price
+        category_id
+      }
+    }
+  }
+}
+```
+
+### Using variables
+
+```graphql
+query EmployeesByCity($filter: EmployeesFilter) {
+  employees(where: $filter, sort_by: "last_name") {
+    edges {
+      node {
+        first_name
+        last_name
+        city
+      }
+    }
+  }
+}
+```
+
+Variables:
+
+```json
+{ "filter": { "city": { "in": ["London", "Seattle"] }, "employee_id": { "gt": 3 } } }
+```

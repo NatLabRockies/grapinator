@@ -51,7 +51,7 @@ GRAPINATOR_CONFIG=/resources/grapinator_rbac.ini \
     grapinator.svc_gunicorn:application >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
-INTROSPECTION_QUERY='{ employee: __type(name: "Employees") { fields { name } } root: __type(name: "Query") { fields { name args { name } } } }'
+INTROSPECTION_QUERY='{ employee: __type(name: "Employees") { fields { name } } root: __type(name: "Query") { fields { name args(includeDeprecated: true) { name } } } where: __type(name: "EmployeesFilter") { inputFields { name } } }'
 HR_INTROSPECTION=$(post_graphql "$INTROSPECTION_QUERY" "$TOKEN") || {
     cat "$SERVER_LOG" >&2
     exit 1
@@ -70,8 +70,9 @@ arguments = {
     if field["name"] == "employees"
     for arg in field["args"]
 }
-if "birth_date" not in fields or "birth_date" not in arguments:
-    print("HR schema is missing the protected output field or filter argument", file=sys.stderr)
+where_fields = {field["name"] for field in response["data"]["where"]["inputFields"]}
+if "birth_date" not in fields or "birth_date" not in arguments or "birth_date" not in where_fields:
+    print("HR schema is missing the protected output field, filter argument, or where field", file=sys.stderr)
     raise SystemExit(1)
 '
 
@@ -102,7 +103,8 @@ arguments = {
     if field["name"] == "employees"
     for arg in field["args"]
 }
-if "birth_date" in fields or "birth_date" in arguments:
+where_fields = {field["name"] for field in response["data"]["where"]["inputFields"]}
+if "birth_date" in fields or "birth_date" in arguments or "birth_date" in where_fields:
     print("birth_date is unexpectedly visible without the HR role", file=sys.stderr)
     raise SystemExit(1)
 '
@@ -116,4 +118,29 @@ if not any("birth_date" in error["message"] for error in response.get("errors", 
     print("Expected the unauthenticated protected-field query to fail validation", file=sys.stderr)
     raise SystemExit(1)
 print("PASS: unauthenticated schema hides birth_date and rejects its use")
+'
+
+WHERE_QUERY='{ employees(where: {birth_date: {gt: "1972-02-19T00:00:00"}}, sort_by: "birth_date") { edges { node { employee_id birth_date } } } }'
+HR_WHERE=$(post_graphql "$WHERE_QUERY" "$TOKEN")
+printf '%s\n' "$HR_WHERE" | python -c '
+import json
+import sys
+response = json.load(sys.stdin)
+if response.get("errors"):
+    print(response["errors"], file=sys.stderr)
+    raise SystemExit(1)
+print("PASS: HR can filter by birth_date with where; returned", len(response["data"]["employees"]["edges"]), "employees")
+'
+
+ANON_WHERE=$(post_graphql '{ employees(where: {or: [{birth_date: {gt: "1972-02-19T00:00:00"}}]}) { edges { node { employee_id } } } }' "")
+ANON_UNKNOWN=$(post_graphql '{ employees(where: {or: [{absent_probe: {gt: "1972-02-19T00:00:00"}}]}) { edges { node { employee_id } } } }' "")
+PROTECTED="$ANON_WHERE" UNKNOWN="$ANON_UNKNOWN" python -c '
+import json
+import os
+protected = [e["message"].replace("birth_date", "probe") for e in json.loads(os.environ["PROTECTED"]).get("errors", [])]
+unknown = [e["message"].replace("absent_probe", "probe") for e in json.loads(os.environ["UNKNOWN"]).get("errors", [])]
+if not protected or protected != unknown or any("Did you mean" in m for m in protected):
+    print("Protected where field is distinguishable from an unknown field:", protected, unknown)
+    raise SystemExit(1)
+print("PASS: unauthenticated where on birth_date matches an unknown field error")
 '

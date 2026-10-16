@@ -617,5 +617,36 @@ class TestSettingsDeprecatedWsgiKeys(unittest.TestCase):
         self.assertTrue(any('deprecated' in r.getMessage().lower() for r in cm.records))
 
 
+
+# ---------------------------------------------------------------------------
+# [GRAPHENE] MAX_PAGE_SIZE / MAX_IN_LIST_SIZE (issue #43)
+# ---------------------------------------------------------------------------
+
+class TestSettingsGrapheneLimits(unittest.TestCase):
+
+    def test_defaults(self):
+        s = _make_mock_settings({})
+        self.assertIsNone(s.MAX_PAGE_SIZE)
+        self.assertEqual(s.MAX_IN_LIST_SIZE, 500)
+
+    def test_explicit_values(self):
+        s = _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): '250',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1000',
+        })
+        self.assertEqual(s.MAX_PAGE_SIZE, 250)
+        self.assertEqual(s.MAX_IN_LIST_SIZE, 1000)
+
+    def test_invalid_values_fail_at_startup(self):
+        for key in ('MAX_PAGE_SIZE', 'MAX_IN_LIST_SIZE'):
+            for value in ('abc', '0', '-5', '1.5', ''):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(RuntimeError, key):
+                        _make_mock_settings({('GRAPHENE', key): value})
+
+    def test_in_list_size_above_oracle_limit_fails(self):
+        with self.assertRaisesRegex(RuntimeError, 'MAX_IN_LIST_SIZE'):
+            _make_mock_settings({('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1001'})
+
 if __name__ == '__main__':
     unittest.main()
