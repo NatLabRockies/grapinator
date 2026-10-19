@@ -15,7 +15,7 @@ from . import context  # noqa: F401
 
 import graphene
 from graphql import validate_schema
-from sqlalchemy import Boolean, Column, Integer, create_engine, event
+from sqlalchemy import Boolean, Column, Integer, String, create_engine, event
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 from graphene_sqlalchemy import SQLAlchemyConnectionField
 
@@ -156,6 +156,22 @@ class TestWhereOperators(_GraphQLTestCase):
             [2, 6, 7, 9],
         )
 
+    def test_not_in_excludes_nulls(self):
+        self.assertEqual(self.employee_ids('{reports_to: {notIn: [2]}}'), [6, 7, 9])
+
+    def test_injection_payloads_are_literal_values(self):
+        query = (
+            'query($w: EmployeesFilter) { employees(where: $w) '
+            '{ edges { node { employee_id } } } }'
+        )
+        for operator in ('eq', 'contains', 'startsWith', 'endsWith', 'in'):
+            with self.subTest(operator=operator):
+                payload = "London' OR 1=1 --"
+                operand = [payload] if operator == 'in' else payload
+                body = self.post(query, variables={'w': {'city': {operator: operand}}})
+                self.assertNotIn('errors', body, body)
+                self.assertEqual(body['data']['employees']['edges'], [])
+
 
 # ---------------------------------------------------------------------------
 # Boolean logic
@@ -199,6 +215,32 @@ class TestWhereLogic(_GraphQLTestCase):
         self.assertEqual(self.employee_ids('{or: []}'), [])
         self.assertEqual(self.employee_ids('{employee_id: {in: []}}'), [])
         self.assertEqual(len(self.employee_ids('{employee_id: {notIn: []}}')), 9)
+
+    def test_nested_empty_filters_have_boolean_identity(self):
+        cases = {
+            '{employee_id: {}}': list(range(1, 10)),
+            '{not: {}}': [],
+            '{not: {or: []}}': list(range(1, 10)),
+            '{and: [{}, {employee_id: {eq: 4}}]}': [4],
+            '{or: [{}, {employee_id: {eq: 4}}]}': list(range(1, 10)),
+        }
+        for where, expected in cases.items():
+            with self.subTest(where=where):
+                self.assertEqual(self.employee_ids(where), expected)
+
+    def test_omitted_and_null_variables_are_unfiltered(self):
+        query = (
+            'query($w: EmployeesFilter) { employees(where: $w, sort_by: "employee_id") '
+            '{ edges { node { employee_id } } } }'
+        )
+        for variables in ({}, {'w': None}, {'w': {}}):
+            with self.subTest(variables=variables):
+                body = self.post(query, variables=variables)
+                self.assertNotIn('errors', body, body)
+                self.assertEqual(
+                    [edge['node']['employee_id'] for edge in body['data']['employees']['edges']],
+                    list(range(1, 10)),
+                )
 
     def test_in_matches_equivalent_or(self):
         self.assertEqual(
@@ -297,6 +339,75 @@ class TestWhereRejections(_GraphQLTestCase):
         messages = self.error_messages(EMPLOYEES % '{employee_id: {in: ["1"]}}')
         self.assertIn('Int cannot represent', messages[0])
 
+    def test_every_null_operand_is_rejected_before_sql(self):
+        for operator in ('eq', 'ne', 'in', 'notIn', 'gt', 'gte', 'lt', 'lte', 'isNull'):
+            with self.subTest(operator=operator):
+                statements = self.count_statements()
+                messages = self.error_messages(
+                    EMPLOYEES % ('{employee_id: {%s: null}}' % operator)
+                )
+                self.assertEqual(messages, [
+                    f"Null is not allowed for '{operator}'; use isNull to match null values."
+                ])
+                self.assertEqual(statements, [])
+
+    def test_invalid_variable_shapes_are_rejected_before_sql(self):
+        query = (
+            'query($w: EmployeesFilter) { employees(where: $w) '
+            '{ edges { node { employee_id } } } }'
+        )
+        cases = (
+            {'and': [None]},
+            {'or': [None]},
+            {'employee_id': {'notIn': [1, None]}},
+            {'employee_id': {'gt': '1'}},
+            {'employee_id': {'contains': '1'}},
+            {'hire_date': {'eq': 'not-a-date'}},
+            {'city': {'gt': 'London'}},
+            {'city': 'London'},
+            {'territories': {'eq': 1}},
+        )
+        for where in cases:
+            with self.subTest(where=where):
+                statements = self.count_statements()
+                self.error_messages(query, variables={'w': where})
+                self.assertEqual(statements, [])
+
+    def test_list_limit_applies_to_both_operators_inside_logic(self):
+        with patch.object(settings, 'MAX_IN_LIST_SIZE', 2):
+            for operator in ('in', 'notIn'):
+                for template in ('%s', '{and: [%s]}', '{or: [%s]}', '{not: %s}'):
+                    with self.subTest(operator=operator, template=template):
+                        where = template % ('{employee_id: {%s: [1, 2, 3]}}' % operator)
+                        statements = self.count_statements()
+                        self.assertEqual(
+                            self.error_messages(EMPLOYEES % where),
+                            ['List exceeds the maximum of 2 values.'],
+                        )
+                        self.assertEqual(statements, [])
+
+    def test_guardrails_apply_to_variables_and_count_each_operator(self):
+        query = (
+            'query($w: EmployeesFilter) { employees(where: $w) '
+            '{ edges { node { employee_id } } } }'
+        )
+        with patch.object(schema_module, '_WHERE_MAX_PREDICATES', 2):
+            body = self.post(query, variables={'w': {'employee_id': {'gt': 1, 'lt': 4}}})
+            self.assertNotIn('errors', body, body)
+            statements = self.count_statements()
+            messages = self.error_messages(query, variables={
+                'w': {'employee_id': {'gt': 1, 'lt': 4}, 'city': {'isNull': False}}
+            })
+            self.assertEqual(messages, ['Filter exceeds the maximum of 2 conditions.'])
+            self.assertEqual(statements, [])
+        with patch.object(schema_module, '_WHERE_MAX_DEPTH', 2):
+            statements = self.count_statements()
+            messages = self.error_messages(query, variables={
+                'w': {'and': [{'or': [{'employee_id': {'eq': 1}}]}]}
+            })
+            self.assertEqual(messages, ['Filter nesting exceeds the maximum depth of 2.'])
+            self.assertEqual(statements, [])
+
 
 # ---------------------------------------------------------------------------
 # Legacy compatibility and mixing
@@ -339,6 +450,27 @@ class TestLegacyCompatibility(_GraphQLTestCase):
             'Deprecated filter arguments' in str(call.args[0]) for call in info.call_args_list
         ))
 
+    def test_legacy_wildcards_are_preserved_but_where_escapes_them(self):
+        for value in ('%', '_'):
+            with self.subTest(value=value):
+                self.assertEqual(len(self.employee_ids_for(
+                    '{ employees(last_name: "%s") { edges { node { employee_id } } } }'
+                    % value
+                )), 9)
+                self.assertEqual(self.employee_ids('{last_name: {contains: "%s"}}' % value), [])
+
+    def test_legacy_log_identifies_client_without_logging_filter_value(self):
+        with self.assertLogs('grapinator.schema', level='INFO') as captured:
+            self.post(
+                '{ employees(city: "London", matches: "exact", logic: "and") '
+                '{ edges { node { employee_id } } } }', claims={'sub': 'regression-client'},
+            )
+        message = next(line for line in captured.output if 'Deprecated filter arguments' in line)
+        self.assertIn('regression-client', message)
+        for name in ('city', 'matches', 'logic'):
+            self.assertIn(name, message)
+        self.assertNotIn('London', message)
+
     def test_introspection_marks_only_legacy_filters_deprecated(self):
         body = self.post(
             '{ __type(name: "Query") { fields { name '
@@ -375,6 +507,36 @@ class TestLegacyCompatibility(_GraphQLTestCase):
 
 class TestWhereSchema(unittest.TestCase):
 
+    def test_all_scalar_filter_contracts(self):
+        equality = {'eq', 'ne', 'in', 'notIn', 'isNull'}
+        comparison = equality | {'gt', 'gte', 'lt', 'lte'}
+        cases = (
+            (graphene.String, equality | {'contains', 'startsWith', 'endsWith'}),
+            (graphene.ID, equality),
+            (graphene.Int, comparison),
+            (graphene.BigInt, comparison),
+            (graphene.Float, comparison),
+            (graphene.Decimal, comparison),
+            (graphene.Date, comparison),
+            (graphene.DateTime, comparison),
+            (graphene.Time, comparison),
+            (graphene.Boolean, {'eq', 'ne', 'isNull'}),
+        )
+        for scalar, expected in cases:
+            with self.subTest(scalar=scalar.__name__):
+                filter_type = _scalar_filter_type(scalar)
+                self.assertIs(_scalar_filter_type(scalar), filter_type)
+                self.assertEqual(set(filter_type._meta.fields), expected)
+                for name, field in filter_type._meta.fields.items():
+                    if name in ('in', 'notIn'):
+                        self.assertIsInstance(field.type, graphene.List)
+                        self.assertIsInstance(field.type.of_type, graphene.NonNull)
+                        self.assertIs(field.type.of_type.of_type, scalar)
+                    else:
+                        self.assertIs(
+                            field.type, graphene.Boolean if name == 'isNull' else scalar
+                        )
+
     def test_entity_filter_fields(self):
         filter_type = schema_module.gql_schema.graphql_schema.get_type('EmployeesFilter')
         self.assertIn('birth_date', filter_type.fields)
@@ -384,6 +546,35 @@ class TestWhereSchema(unittest.TestCase):
         self.assertIn('not', filter_type.fields)
         # Relationship navigation fields are not filterable.
         self.assertNotIn('territories', filter_type.fields)
+
+    def test_filter_generation_excludes_unavailable_and_nonscalar_columns(self):
+        defaults = {
+            'type': graphene.String, 'desc': 'Visible column',
+            'isqueryable': True, 'ishidden': False, 'isresolver': False,
+        }
+        cols = [
+            dict(defaults, name='visible'),
+            dict(defaults, name='hidden', ishidden=True),
+            dict(defaults, name='computed', isresolver=True),
+            dict(defaults, name='unqueryable', isqueryable=False),
+            dict(defaults, name='navigation', type=graphene.List(graphene.String)),
+        ]
+        with patch.dict(schema_module._FILTER_TYPE_OWNERS):
+            filter_type = _make_where_filter_type('RegressionColumns', cols)
+        self.assertEqual(set(filter_type._meta.fields), {'visible', 'and', 'or', 'not'})
+        self.assertEqual(filter_type._meta.fields['visible'].description, 'Visible column')
+
+    def test_every_entity_exposes_its_own_recursive_filter(self):
+        schema = schema_module.gql_schema.graphql_schema
+        for entity in schema_module.schema_settings.get_gql_classes():
+            with self.subTest(entity=entity['gql_class']):
+                filter_type = schema.get_type(entity['gql_class'] + 'Filter')
+                self.assertIsNotNone(filter_type)
+                field = schema.query_type.fields[entity['gql_conn_query_name']]
+                self.assertIs(field.args['where'].type, filter_type)
+                self.assertIs(filter_type.fields['not'].type, filter_type)
+                for name in ('and', 'or'):
+                    self.assertIs(filter_type.fields[name].type.of_type.of_type, filter_type)
 
     def test_scalar_filter_operators(self):
         schema = schema_module.gql_schema.graphql_schema
@@ -405,11 +596,13 @@ class TestWhereSchema(unittest.TestCase):
         )
 
     def test_logical_column_name_fails_schema_build(self):
-        with self.assertRaisesRegex(RuntimeError, 'logical operator'):
-            _make_where_filter_type('Widgets', [{
-                'name': 'not', 'type': graphene.String, 'desc': None,
-                'isqueryable': True, 'ishidden': False, 'isresolver': False,
-            }])
+        for name in ('and', 'or', 'not'):
+            with self.subTest(name=name), patch.dict(schema_module._FILTER_TYPE_OWNERS):
+                with self.assertRaisesRegex(RuntimeError, 'logical operator'):
+                    _make_where_filter_type('Widgets', [{
+                        'name': name, 'type': graphene.String, 'desc': None,
+                        'isqueryable': True, 'ishidden': False, 'isresolver': False,
+                    }])
 
     def test_type_name_collision_fails_schema_build(self):
         # 'String' + 'Filter' is the StringFilter scalar filter's name.
@@ -537,6 +730,40 @@ class TestWhereRbac(_GraphQLTestCase):
         self.assertNotIn('birth_date', reader_fields)
         self.assertEqual(hr_fields - reader_fields, {'birth_date'})
 
+    def test_role_schema_cache_never_changes_base_or_other_roles(self):
+        hr_schema = schema_module.get_schema_for_roles(['hr', 'reader', 'hr'])
+        reader_schema = schema_module.get_schema_for_roles(['reader'])
+        self.assertIs(hr_schema, schema_module.get_schema_for_roles(['reader', 'hr']))
+        self.assertIn('birth_date', hr_schema.get_type('EmployeesFilter').fields)
+        self.assertNotIn('birth_date', reader_schema.get_type('EmployeesFilter').fields)
+        self.assertIn(
+            'birth_date', schema_module.gql_schema.graphql_schema.get_type('EmployeesFilter').fields
+        )
+        for schema in (hr_schema, reader_schema):
+            self.assertEqual(validate_schema(schema), [])
+            filter_type = schema.get_type('EmployeesFilter')
+            self.assertIs(filter_type.fields['not'].type, filter_type)
+
+    def test_nested_variables_reject_protected_and_unknown_fields_without_sql(self):
+        query = (
+            'query($w: EmployeesFilter) { employees(where: $w) '
+            '{ edges { node { employee_id } } } }'
+        )
+        for wrapper in ('and', 'or', 'not'):
+            with self.subTest(wrapper=wrapper):
+                messages = []
+                statements = self.count_statements()
+                for name in ('birth_date', 'birth_dat'):
+                    child = {name: {'isNull': True}}
+                    where = {wrapper: child if wrapper == 'not' else [child]}
+                    errors = self.error_messages(
+                        query, variables={'w': where}, roles=['reader'], authenticated=True,
+                    )
+                    self.assertFalse(any('Did you mean' in error for error in errors))
+                    messages.append([error.replace(name, 'probe') for error in errors])
+                self.assertEqual(messages[0], messages[1])
+                self.assertEqual(statements, [])
+
     def test_translation_rejects_protected_column_without_sql(self):
         info = MagicMock()
         info.context = {'user_roles': ['reader']}
@@ -605,20 +832,25 @@ class _Flag(_BoolBase):
     __tablename__ = 'flags'
     id = Column(Integer, primary_key=True)
     active = Column(Boolean)
+    label = Column(String)
 
 
 _bool_engine = create_engine('sqlite:///:memory:')
 _BoolBase.metadata.create_all(_bool_engine)
 _BoolSession = scoped_session(sessionmaker(bind=_bool_engine))
 with _BoolSession() as _seed:
-    _seed.add_all([_Flag(id=1, active=True), _Flag(id=2, active=False), _Flag(id=3, active=None)])
+    _seed.add_all([
+        _Flag(id=1, active=True, label='50%_off/a'),
+        _Flag(id=2, active=False, label='plain'),
+        _Flag(id=3, active=None, label=None),
+    ])
     _seed.commit()
 
 
 class TestBooleanWhere(unittest.TestCase):
 
     def setUp(self):
-        _SORTABLE_FIELDS[_Flag.__name__] = {'id', 'active'}
+        _SORTABLE_FIELDS[_Flag.__name__] = {'id', 'active', 'label'}
         self.addCleanup(_SORTABLE_FIELDS.pop, _Flag.__name__, None)
 
     def ids(self, where):
@@ -628,9 +860,42 @@ class TestBooleanWhere(unittest.TestCase):
 
     def test_boolean_operators(self):
         self.assertEqual(self.ids({'active': {'eq': True}}), [1])
+        self.assertEqual(self.ids({'active': {'eq': False}}), [2])
         self.assertEqual(self.ids({'active': {'ne': True}}), [2])
+        self.assertEqual(self.ids({'active': {'ne': False}}), [1])
         self.assertEqual(self.ids({'active': {'isNull': True}}), [3])
         self.assertEqual(self.ids({'active': {'isNull': False}}), [1, 2])
+
+    def test_literal_like_metacharacters_match_stored_values(self):
+        cases = (
+            ('contains', '%_'), ('contains', 'off/a'), ('startsWith', '50%_'),
+            ('endsWith', '%_off/a'), ('endsWith', '/a'),
+        )
+        for operator, value in cases:
+            with self.subTest(operator=operator, value=value):
+                self.assertEqual(self.ids({'label': {operator: value}}), [1])
+
+    def test_malformed_translation_trees_are_rejected_before_query_construction(self):
+        cases = (
+            [], 'invalid', 1, {'not': []}, {'and': {}}, {'or': {}},
+            {'and': [None]}, {'or': [1]}, {'id': 1}, {'id': []},
+        )
+        with patch.object(SQLAlchemyConnectionField, 'get_query') as base_query:
+            for where in cases:
+                with self.subTest(where=where):
+                    with self.assertRaisesRegex(ClientError, '^Invalid filter argument\\.$'):
+                        MyConnectionField.get_query(_Flag, MagicMock(), where=where)
+        base_query.assert_not_called()
+
+    def test_translation_rejects_null_list_members_before_query_construction(self):
+        with patch.object(SQLAlchemyConnectionField, 'get_query') as base_query:
+            for operator in ('in', 'notIn'):
+                with self.subTest(operator=operator):
+                    with self.assertRaisesRegex(ClientError, 'use isNull'):
+                        MyConnectionField.get_query(
+                            _Flag, MagicMock(), where={'id': {operator: [1, None]}},
+                        )
+        base_query.assert_not_called()
 
     def test_logical_keys_filled_with_none_are_ignored(self):
         self.assertEqual(self.ids({'active': {'eq': False}, 'and': None, 'or': None, 'not': None}), [2])
@@ -644,7 +909,7 @@ class TestMaxPageSize(_GraphQLTestCase):
 
     PAGE = (
         '{ employees(%s sort_by: "employee_id") { pageInfo { hasNextPage '
-        'hasPreviousPage endCursor } edges { node { employee_id } } } }'
+        'hasPreviousPage startCursor endCursor } edges { node { employee_id } } } }'
     )
 
     def page(self, args=''):
@@ -683,6 +948,60 @@ class TestMaxPageSize(_GraphQLTestCase):
             ids, info = self.page('last: 50,')
             self.assertEqual(ids, [7, 8, 9])
             self.assertTrue(info['hasPreviousPage'])
+
+    def test_backward_cursors_continue_without_duplicates(self):
+        with patch.object(settings, 'MAX_PAGE_SIZE', 4):
+            ids, info = self.page('last: 50,')
+            self.assertEqual(ids, [6, 7, 8, 9])
+            ids, info = self.page(f'last: 50, before: "{info["startCursor"]}",')
+            self.assertEqual(ids, [2, 3, 4, 5])
+            self.assertTrue(info['hasPreviousPage'])
+            ids, info = self.page(f'last: 50, before: "{info["startCursor"]}",')
+            self.assertEqual(ids, [1])
+            self.assertFalse(info['hasPreviousPage'])
+
+    def test_zero_page_sizes_are_not_replaced_by_default(self):
+        with patch.object(settings, 'MAX_PAGE_SIZE', 3):
+            for args in ('first: 0,', 'last: 0,'):
+                with self.subTest(args=args):
+                    self.assertEqual(self.page(args)[0], [])
+
+    def test_null_page_sizes_use_default(self):
+        with patch.object(settings, 'MAX_PAGE_SIZE', 3):
+            ids, info = self.page('first: null, last: null,')
+            self.assertEqual(ids, [1, 2, 3])
+            self.assertTrue(info['hasNextPage'])
+
+    def test_clamp_preserves_input_arguments_and_other_modifiers(self):
+        args = {
+            'first': 50, 'last': 40, 'after': 'cursor', 'before': None,
+            'where': {'employee_id': {'gt': 1}}, 'sort_by': 'employee_id',
+        }
+        original = dict(args)
+        with patch.object(settings, 'MAX_PAGE_SIZE', 3):
+            actual = schema_module._clamp_page_args(args, _Flag)
+        self.assertIsNot(actual, args)
+        self.assertEqual(args, original)
+        self.assertEqual(actual, dict(original, first=3, last=3))
+
+    def test_default_cap_with_where_sort_and_cursor(self):
+        with patch.object(settings, 'MAX_PAGE_SIZE', 2):
+            args = 'where: {city: {eq: "London"}}, sort_dir: "desc",'
+            ids, info = self.page(args)
+            self.assertEqual(ids, [9, 7])
+            self.assertTrue(info['hasNextPage'])
+            ids, info = self.page(args + f' after: "{info["endCursor"]}",')
+            self.assertEqual(ids, [6, 5])
+            self.assertFalse(info['hasNextPage'])
+
+    def test_empty_filtered_connection_has_no_cursors(self):
+        with patch.object(settings, 'MAX_PAGE_SIZE', 2):
+            ids, info = self.page('where: {employee_id: {lt: 0}},')
+            self.assertEqual(ids, [])
+            self.assertEqual(info, {
+                'hasNextPage': False, 'hasPreviousPage': False,
+                'startCursor': None, 'endCursor': None,
+            })
 
     def test_no_page_args_returns_at_most_limit(self):
         with patch.object(settings, 'MAX_PAGE_SIZE', 5):

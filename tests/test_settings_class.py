@@ -637,11 +637,38 @@ class TestSettingsGrapheneLimits(unittest.TestCase):
         self.assertEqual(s.MAX_PAGE_SIZE, 250)
         self.assertEqual(s.MAX_IN_LIST_SIZE, 1000)
 
+    def test_options_can_be_configured_independently(self):
+        for key, other, default in (
+            ('MAX_PAGE_SIZE', 'MAX_IN_LIST_SIZE', 500),
+            ('MAX_IN_LIST_SIZE', 'MAX_PAGE_SIZE', None),
+        ):
+            with self.subTest(key=key):
+                configured = _make_mock_settings({('GRAPHENE', key): '1'})
+                self.assertEqual(getattr(configured, key), 1)
+                self.assertEqual(getattr(configured, other), default)
+
+    def test_whitespace_is_stripped_and_page_limit_has_no_oracle_cap(self):
+        configured = _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): ' 1001\t',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '\t1000 ',
+        })
+        self.assertEqual(configured.MAX_PAGE_SIZE, 1001)
+        self.assertEqual(configured.MAX_IN_LIST_SIZE, 1000)
+
+    def test_configured_instance_does_not_change_next_instances_defaults(self):
+        _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): '1',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1',
+        })
+        defaults = _make_mock_settings({})
+        self.assertIsNone(defaults.MAX_PAGE_SIZE)
+        self.assertEqual(defaults.MAX_IN_LIST_SIZE, 500)
+
     def test_invalid_values_fail_at_startup(self):
         for key in ('MAX_PAGE_SIZE', 'MAX_IN_LIST_SIZE'):
-            for value in ('abc', '0', '-5', '1.5', ''):
+            for value in ('abc', '0', '-5', '1.5', '', ' ', 'true', '1e3', '0x10'):
                 with self.subTest(key=key, value=value):
-                    with self.assertRaisesRegex(RuntimeError, key):
+                    with self.assertRaisesRegex(RuntimeError, f'{key} must be a positive integer.'):
                         _make_mock_settings({('GRAPHENE', key): value})
 
     def test_in_list_size_above_oracle_limit_fails(self):

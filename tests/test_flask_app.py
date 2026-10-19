@@ -23,7 +23,7 @@ from . import context  # noqa: F401
 
 from graphql_server.flask.views import GraphQLView
 from graphql import ExecutionResult, GraphQLError, validate_schema
-from grapinator.app import app, FixedGraphQLView
+from grapinator.app import app, FixedGraphQLView, _strip_hidden_input_suggestions
 from grapinator.schema import ClientError
 from grapinator.middleware import SecurityHeadersMiddleware, CorsMiddleware
 from grapinator import settings
@@ -598,6 +598,82 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
             and 'birth_date' in error['message']
             for error in hr_unknown_argument['errors']
         ))
+
+
+class TestInputSuggestionSanitization(unittest.TestCase):
+
+    MESSAGE = (
+        "Variable '$w' got invalid value {'eqq': 1}; "
+        "Field 'eqq' is not defined by type 'IntFilter'. Did you mean 'eq'?"
+    )
+
+    def test_results_without_relevant_suggestions_are_unchanged(self):
+        for result in (
+            ExecutionResult(data={'employees': []}),
+            ExecutionResult(errors=[GraphQLError('Int cannot represent string value.')]),
+            ExecutionResult(errors=[GraphQLError(
+                "Field 'missing' is not defined by type 'IntFilter'."
+            )]),
+        ):
+            with self.subTest(result=result):
+                self.assertIs(_strip_hidden_input_suggestions({}, result), result)
+
+    def test_anonymous_sanitization_preserves_error_and_result_metadata(self):
+        from graphql import Source
+        original_error = ValueError('original')
+        error = GraphQLError(
+            self.MESSAGE, source=Source('query { employees }'), positions=[8],
+            path=['employees'], original_error=original_error,
+            extensions={'code': 'BAD_USER_INPUT'},
+        )
+        untouched = GraphQLError('Another validation error.')
+        result = ExecutionResult(
+            data={'employees': None}, errors=[error, untouched], extensions={'trace': 'test'},
+        )
+        actual = _strip_hidden_input_suggestions({}, result)
+        self.assertIsNot(actual, result)
+        self.assertEqual(actual.errors[0].message, self.MESSAGE.split(' Did you mean')[0])
+        self.assertEqual(error.message, self.MESSAGE)
+        self.assertIs(actual.data, result.data)
+        self.assertEqual(actual.extensions, result.extensions)
+        self.assertIs(actual.errors[1], untouched)
+        for name in ('nodes', 'source', 'positions', 'locations', 'path', 'extensions'):
+            self.assertEqual(getattr(actual.errors[0], name), getattr(error, name))
+        self.assertIs(actual.errors[0].original_error, original_error)
+
+    def test_authenticated_callers_keep_unprotected_operator_suggestions(self):
+        result = ExecutionResult(errors=[GraphQLError(self.MESSAGE)])
+        context = {'authenticated': True, 'user_roles': ['reader']}
+        self.assertIs(_strip_hidden_input_suggestions(context, result), result)
+
+    def test_role_matching_and_partial_access_control_suggestions(self):
+        from grapinator.schema import _WHERE_FIELD_AUTH_ROLES
+        message = (
+            "Field 'birth_dat' is not defined by type 'EmployeesFilter'. "
+            "Did you mean 'birth_date'?"
+        )
+        with patch.dict(_WHERE_FIELD_AUTH_ROLES, {
+            'EmployeesFilter': {'birth_date': ['hr', 'admin'], 'city': ['admin']},
+        }):
+            for roles, hidden in (([], True), (['reader'], True), (['hr'], True),
+                                  (['admin'], False), (['hr', 'admin'], False)):
+                with self.subTest(roles=roles):
+                    result = ExecutionResult(errors=[GraphQLError(message)])
+                    actual = _strip_hidden_input_suggestions(
+                        {'authenticated': True, 'user_roles': roles}, result
+                    )
+                    self.assertEqual('Did you mean' not in actual.errors[0].message, hidden)
+
+    def test_only_hidden_type_hints_are_removed_from_mixed_message(self):
+        from grapinator.schema import _WHERE_FIELD_AUTH_ROLES
+        hidden = "Field 'birth_dat' is not defined by type 'EmployeesFilter'."
+        message = hidden + " Did you mean 'birth_date'? " + self.MESSAGE
+        with patch.dict(_WHERE_FIELD_AUTH_ROLES, {'EmployeesFilter': {'birth_date': ['hr']}}):
+            result = ExecutionResult(errors=[GraphQLError(message)])
+            actual = _strip_hidden_input_suggestions(
+                {'authenticated': True, 'user_roles': ['reader']}, result
+            )
+        self.assertEqual(actual.errors[0].message, hidden + ' ' + self.MESSAGE)
 
 
 class TestGraphQLErrorMasking(unittest.TestCase):

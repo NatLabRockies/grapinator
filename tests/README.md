@@ -2,6 +2,61 @@
 
 This directory contains a comprehensive testing framework for GraphQL APIs, specifically designed for the Northwind database but adaptable to any GraphQL endpoint. The suite includes query execution, result validation, performance testing, and endpoint comparison capabilities.
 
+## Local Python Regression Tests
+
+From the repository root, activate the project virtual environment and run:
+
+```bash
+GQLAPI_CRYPT_KEY=testkey python -m unittest discover -s tests -t . -v
+```
+
+The Flask tests use an in-process client, so no HTTP server is needed. Tests
+that query Northwind require the sample database at the location configured
+by `DB_CONNECT` in `grapinator/resources/grapinator.ini`. The default SQLite URI
+resolves to `db/northwind.db` relative to the working directory.
+Boolean and literal-pattern tests use in-memory SQLite.
+The default schema has no entity-level roles, so two role-logging tests skip;
+entity access denial is tested separately with an explicitly registered policy.
+
+### Typed Filtering and Page Limits (Issue #43)
+
+Run the focused regressions with:
+
+```bash
+GQLAPI_CRYPT_KEY=testkey python -m unittest \
+  tests.test_where_filter \
+  tests.test_settings_class.TestSettingsGrapheneLimits \
+  tests.test_flask_app.TestInputSuggestionSanitization -v
+```
+
+Coverage includes:
+
+| Area | Regression Cases |
+| --- | --- |
+| Scalar filters | Operator and operand-type contracts for String, ID, Int, BigInt, Float, Decimal, Date, DateTime, Time, and Boolean; runtime string, integer, float, date/time, Boolean, and null comparisons |
+| Boolean logic | Implicit AND, nested AND/OR/NOT, empty-object/list identities, duplicate membership values, omitted/null variables |
+| Validation | Invalid input shapes and types, null operands/list members, depth/predicate/list boundaries, nested and variable-based limits, rejection before SQL |
+| Schema generation | Per-entity recursive inputs, cached scalar types, hidden/non-queryable/resolver/non-scalar exclusions, reserved names and type collisions |
+| Security | Literal SQL-injection payloads, protected/unknown field parity, nested variable errors, role-isolated schema caches, row/entity policy enforcement |
+| Error responses | Role-aware suggestion removal, preserved authenticated operator suggestions, unchanged data/error metadata |
+| Legacy filters | Shared operators, wildcard compatibility, AND combination with `where`, deprecation introspection and value-free client logging |
+| Relay pagination | Optional/default caps, first/last boundaries, zero/null sizes, forward/backward cursors, filtering/sorting interactions, empty connections, input immutability |
+| Settings | Independent defaults, positive-integer validation, whitespace, Oracle's 1000-item boundary, configuration-instance isolation |
+
+For optional line and branch coverage, install the `coverage` development tool
+and run:
+
+```bash
+python -m pip install coverage
+GQLAPI_CRYPT_KEY=testkey python -m coverage run --branch --source=grapinator \
+  -m unittest discover -s tests -t .
+python -m coverage report -m
+```
+
+These local checks do not certify behavior against live Oracle/MySQL databases
+or an external Keycloak deployment; use the service-backed RBAC scripts and
+endpoint comparison tools for those environments.
+
 ## 📁 Files Overview
 
 ### Core Test Files

@@ -423,3 +423,137 @@ Variables:
 ```json
 { "filter": { "city": { "in": ["London", "Seattle"] }, "employee_id": { "gt": 3 } } }
 ```
+
+### Employees with another manager, including those with no manager
+
+`ne` does not match SQL NULL. Include a separate `isNull` branch when missing
+values should also match:
+
+```graphql
+query OtherOrMissingManager {
+  employees(
+    where: { or: [{ reports_to: { ne: 2 } }, { reports_to: { isNull: true } }] }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name reports_to } }
+  }
+}
+```
+
+### Available products within an inclusive price range
+
+Each column condition and each operator on a column must match. Use `notIn`
+for an exclusion list:
+
+```graphql
+query AvailableProductsInRange {
+  products(
+    where: {
+      unit_price: { gte: 10, lte: 30 }
+      units_in_stock: { gt: 0 }
+      category_id: { notIn: [1, 2] }
+    }
+    sort_by: "product_id"
+  ) {
+    edges { node { product_id product_name unit_price units_in_stock category_id } }
+  }
+}
+```
+
+### Nested AND, OR, and NOT with case-insensitive text matching
+
+```graphql
+query NestedNameSearch {
+  employees(
+    where: {
+      and: [
+        { or: [{ last_name: { contains: "LL" } }, { last_name: { endsWith: "ING" } }] }
+        { not: { city: { startsWith: "Lon" } } }
+        { employee_id: { notIn: [1, 3] } }
+      ]
+    }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name city } }
+  }
+}
+```
+
+See the [worked filter examples](graphiql_user_guide.md#worked-filter-examples)
+for scalar formats, half-open date ranges, literal wildcard characters, and
+additional combinations. `eq: null`, null list members, and operators belonging
+to another scalar type are rejected; use `isNull` for missing values. These
+filters cannot traverse relationships or bypass role/row policies.
+
+---
+
+## Pagination with and without a server cap
+
+These examples assume the unmodified Northwind sample and access to all nine
+employees. Restart the service after editing `[GRAPHENE]` in the active INI.
+Keep sorting, filters, and authorization unchanged between pages, and copy
+returned cursors without decoding or constructing them.
+
+**Unset:** omit or comment out `MAX_PAGE_SIZE`. A query without `first` / `last`
+returns all matching rows, and `first: 50` returns up to 50.
+
+**Set:** add `MAX_PAGE_SIZE = 3`. A query without sizes defaults to three rows;
+`first: 50` and `last: 50` are clamped to three. `first: 2` still returns two.
+This is not an error, so do not assume fewer than 50 rows means the last page.
+
+### Unpaged request under either configuration
+
+```graphql
+query DefaultEmployeePage {
+  employees(sort_by: "employee_id") {
+    edges { node { employee_id last_name } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+```
+
+Unset: IDs `[1, 2, 3, 4, 5, 6, 7, 8, 9]`, `hasNextPage: false`.
+Set to three: IDs `[1, 2, 3]`, `hasNextPage: true`; continue with `after`.
+
+### Forward pages with a where filter
+
+```graphql
+query LondonEmployeePages($after: String) {
+  employees(
+    where: { city: { eq: "London" } }
+    first: 50
+    after: $after
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name city } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+```
+
+First variables: `{ "after": null }`. When the cap is unset this returns
+`[5, 6, 7, 9]` with `hasNextPage: false`. With a cap of three, the first response
+contains `[5, 6, 7]` and `hasNextPage: true`. Run again with
+`{ "after": "<returned endCursor>" }`, replacing the placeholder with that
+cursor: the next page contains `[9]` and `hasNextPage: false`.
+
+### Backward pages
+
+```graphql
+query EmployeePagesBackward($before: String) {
+  employees(last: 50, before: $before, sort_by: "employee_id") {
+    edges { node { employee_id last_name } }
+    pageInfo { hasPreviousPage startCursor }
+  }
+}
+```
+
+First variables: `{ "before": null }`. Unset: all nine IDs, no previous page.
+Set to three: `[7, 8, 9]`, then `[4, 5, 6]`, then `[1, 2, 3]`. For each earlier
+page, replace `before` with the preceding response's `startCursor`; stop when
+`hasPreviousPage` is false. Each page remains ascending by employee ID.
+
+For small explicit pages with no cap, replace `first: 50` or `last: 50` with
+`3` in these queries and use the same cursor workflow. See the
+[configuration examples](grapinator_ini.md#pagination-with-the-cap-unset-or-set)
+and [complete pagination guide](graphiql_user_guide.md#pagination).

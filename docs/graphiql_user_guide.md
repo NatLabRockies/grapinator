@@ -142,7 +142,7 @@ panel to see the columns and operators available to you.
 |---|---|---|
 | `eq` / `ne` | all scalars | `=` / `!=` (exact, case-sensitive for strings) |
 | `in` / `notIn` | all scalars except Boolean | `IN (...)` / `NOT IN (...)` |
-| `gt` / `gte` / `lt` / `lte` | Int, Float, Date, DateTime | `>` / `>=` / `<` / `<=` |
+| `gt` / `gte` / `lt` / `lte` | Int, BigInt, Float, Decimal, Date, DateTime, Time | `>` / `>=` / `<` / `<=` |
 | `contains` / `startsWith` / `endsWith` | String | case-insensitive `ILIKE`; `%` and `_` in the value are matched literally |
 | `isNull` | all scalars | `true` → `IS NULL`; `false` → `IS NOT NULL` |
 
@@ -177,16 +177,134 @@ query Employees($filter: EmployeesFilter) {
 { "filter": { "city": { "eq": "London" }, "employee_id": { "gt": 5 } } }
 ```
 
+### Worked filter examples
+
+Each example below uses the bundled Northwind schema. Filters restrict rows,
+not the fields returned: a column can be filtered without selecting it.
+If a server page limit is configured, these examples may return only the first
+page; use the [pagination workflow](#pagination) to retrieve the rest.
+
+**Exact matches and exclusions.** Find employees outside London whose IDs are
+not in an exclusion list. Both column conditions must match. `eq` and `ne`
+are exact comparisons; `notIn` excludes each listed value.
+
+```graphql
+query EmployeesOutsideLondon {
+  employees(
+    where: { city: { ne: "London" }, employee_id: { notIn: [2, 4] } }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name city } }
+  }
+}
+```
+
+**Case-insensitive string searches.** These independent selections demonstrate
+substring, prefix, and suffix matching. `%` and `_` in the search value are
+literal characters, not SQL wildcards; `contains: "%"` finds an actual percent
+sign, not every string.
+
+```graphql
+query EmployeeNameSearches {
+  substring: employees(where: { last_name: { contains: "LL" } }) {
+    edges { node { employee_id last_name } }
+  }
+  prefix: employees(where: { last_name: { startsWith: "d" } }) {
+    edges { node { employee_id last_name } }
+  }
+  suffix: employees(where: { last_name: { endsWith: "ING" } }) {
+    edges { node { employee_id last_name } }
+  }
+}
+```
+
+**Numeric ranges.** Multiple operators on one column are ANDed: include prices
+from 10 through 30, but only when stock is greater than zero and at most 50.
+
+```graphql
+query ProductsInPriceAndStockRange {
+  products(
+    where: {
+      unit_price: { gte: 10, lte: 30 }
+      units_in_stock: { gt: 0, lt: 51 }
+    }
+    sort_by: "product_id"
+  ) {
+    edges { node { product_id product_name unit_price units_in_stock } }
+  }
+}
+```
+
+**Date/time ranges.** Use an inclusive lower bound and exclusive upper bound
+to include every time on the final day, without guessing its last timestamp.
+This example includes hires during 2014, excluding January 1, 2015.
+
+```graphql
+query EmployeesHiredIn2014 {
+  employees(
+    where: { hire_date: { gte: "2014-01-01T00:00:00", lt: "2015-01-01T00:00:00" } }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name hire_date } }
+  }
+}
+```
+
+Supply scalar values in their declared format: integers and floats as JSON
+numbers, Boolean values as `true` / `false`, Date as `"2014-01-01"`, DateTime as
+`"2014-01-01T00:00:00"`, and Time as `"09:30:00"`. Use only types exposed by
+your schema; Northwind has no Boolean column. A Boolean column's filter accepts
+`eq`, `ne`, and `isNull`, but not ranges or membership lists. An ID column uses
+`eq`, `ne`, `in`, `notIn`, and `isNull`.
+
+**NULL values and inequality.** Retrieve employees who do not report to employee
+2, including employees with no manager. A standalone `ne: 2` would exclude NULL.
+
+```graphql
+query EmployeesWithOtherOrNoManager {
+  employees(
+    where: { or: [{ reports_to: { ne: 2 } }, { reports_to: { isNull: true } }] }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name reports_to } }
+  }
+}
+```
+
+Use `reports_to: { isNull: false }` instead to require a manager. NULL is not an
+empty string: `city: { eq: "" }` tests an empty string, not a missing value.
+
+**Explicit AND with nested OR and NOT.** Require London or Seattle, exclude
+employees 1 and 5, and keep IDs above 3. The outer AND applies to every branch.
+
+```graphql
+query NestedEmployeeFilter {
+  employees(
+    where: {
+      and: [
+        { or: [{ city: { eq: "London" } }, { city: { eq: "Seattle" } }] }
+        { not: { employee_id: { in: [1, 5] } } }
+        { employee_id: { gt: 3 } }
+      ]
+    }
+    sort_by: "employee_id"
+  ) {
+    edges { node { employee_id last_name city } }
+  }
+}
+```
+
 ### Null and list semantics
 
 - Omitting `where`, passing `where: null`, or passing `where: {}` applies no filter.
 - `and: []` matches every row; `or: []` matches no rows.
 - `in: []` matches no rows; `notIn: []` matches every row.
-- Use `isNull` to match NULL values. An explicit `null` for any other operator
+- Use `isNull: true` / `isNull: false` to match NULL / non-NULL values.
+  An explicit `null` for any operator (including `isNull`)
   (for example `eq: null`) is rejected with an error that points to `isNull`,
   and `null` is not allowed inside `in` / `notIn` lists.
 - SQL comparisons never match NULL: `ne: 5` does not return rows where the
-  column is NULL. To include them, use `or: [{ ne: 5 }, { isNull: true }]` on that column,
+  column is NULL. To include them, put complete column filters inside `or`,
   for example `or: [{ reports_to: { ne: 2 } }, { reports_to: { isNull: true } }]`.
 - `in` / `notIn` lists are limited to `MAX_IN_LIST_SIZE` values (default 500);
   longer lists return `List exceeds the maximum of N values.`
@@ -354,59 +472,142 @@ New queries should use `where` with `or: [...]` instead.
 
 ## Pagination
 
-Grapinator uses Relay cursor-based pagination. Use `first` to limit the number of results. The `pageInfo` block provides cursor values for fetching subsequent pages.
+Grapinator uses Relay cursors, not page numbers. `first` / `after` move forward;
+`last` / `before` move backward. Cursors are opaque: copy them from `pageInfo`
+instead of constructing them. Prefer one direction per request.
 
-> **Page size limit:** if the server sets `MAX_PAGE_SIZE`, larger `first` or
-> `last` values are silently reduced to that limit, and a query with neither
-> returns at most that many rows. No error is returned, so **always check
-> `pageInfo.hasNextPage`** (or `hasPreviousPage` with `last`) and continue
-> with the `endCursor` to read the remaining rows.
+### When MAX_PAGE_SIZE is unset
 
-The **Variables** tab at the bottom of the editor panel lets you pass JSON variable values into parameterised queries instead of hardcoding them directly.
+Omit or comment out the setting in the active INI file, then restart the service:
+
+```ini
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
+# MAX_PAGE_SIZE is omitted: no server-imposed page-size cap.
+```
+
+An unpaged query returns all matching, authorized rows. An explicit `first: 50`
+or `last: 50` can return up to 50 rows; there is no implicit page size. For the
+unmodified Northwind sample, both selections below return all nine employees:
+
+```graphql
+query EmployeesWithoutServerCap {
+  unpaged: employees(sort_by: "employee_id") {
+    edges { node { employee_id } }
+    pageInfo { hasNextPage endCursor }
+  }
+  requested: employees(first: 50, sort_by: "employee_id") {
+    edges { node { employee_id } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+```
+
+Both have `hasNextPage: false` for those nine rows. Clients can still paginate
+voluntarily using the forward and backward queries below. Leaving the cap unset
+does not disable pagination; it only removes the server's upper bound.
+
+### When MAX_PAGE_SIZE is set
+
+For a small, visible demonstration, configure a cap of three and restart:
+
+```ini
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
+MAX_PAGE_SIZE = 3
+```
+
+Run `EmployeesWithoutServerCap` again. Both selections now return employee IDs
+`[1, 2, 3]` with `hasNextPage: true`: the omitted size defaults to `first: 3`,
+and `first: 50` is clamped to three. A smaller request such as `first: 2` is
+unchanged. Larger `last` requests are clamped in the same way.
+
+> No truncation error is returned. Always inspect `hasNextPage` for forward
+> paging or `hasPreviousPage` for backward paging. A page shorter than the
+> requested size does not prove you have reached the end when a cap is set.
+
+### Forward paging with a filter
+
+This query works whether the cap is set or unset. Use the **Variables** panel
+to supply the JSON shown below. The London filter matches IDs `[5, 6, 7, 9]`
+in the unmodified sample.
+
+```graphql
+query EmployeePages($filter: EmployeesFilter, $size: Int = 50, $after: String) {
+  employees(
+    where: $filter
+    first: $size
+    after: $after
+    sort_by: "employee_id"
+    sort_dir: "asc"
+  ) {
+    edges { node { employee_id first_name last_name city } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+```
+
+First request:
+
+```json
+{ "filter": { "city": { "eq": "London" } }, "size": 50, "after": null }
+```
+
+With `MAX_PAGE_SIZE = 3`, the first page is `[5, 6, 7]` with `hasNextPage: true`.
+Copy its `endCursor` into the next request's `after` variable, leaving the filter,
+size, and sorting unchanged:
+
+```json
+{ "filter": { "city": { "eq": "London" } }, "size": 50, "after": "<endCursor from the first response>" }
+```
+
+Replace the placeholder with the returned cursor. The second page is `[9]` with
+`hasNextPage: false`, so stop. When the cap is unset, the first request returns
+`[5, 6, 7, 9]` and `hasNextPage: false`. To request two rows at a time with either
+configuration, set `size` to `2`; continue replacing `after` until
+`hasNextPage` is false. An empty filtered result has no edges, a null cursor,
+and `hasNextPage: false`.
 
 ![Variables and Headers panel](images/graphiql_variables_panel.png)
 
-Use `first` to limit the number of results:
+### Backward paging
+
+Use `last` and `before` with `startCursor`, not `endCursor`:
 
 ```graphql
-{
-  orders(first: 10 sort_by: "order_date" sort_dir: "desc") {
-    edges {
-      node {
-        order_id
-        order_date
-        freight
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
+query PreviousEmployees($before: String) {
+  employees(last: 50, before: $before, sort_by: "employee_id", sort_dir: "asc") {
+    edges { node { employee_id last_name } }
+    pageInfo { hasPreviousPage startCursor }
   }
 }
 ```
 
-![Pagination query with pageInfo](images/graphiql_filter_example.png)
+Start with `{ "before": null }`. With `MAX_PAGE_SIZE = 3`, the page contains
+`[7, 8, 9]`. While `hasPreviousPage` is true, send the returned `startCursor`
+as `before`: the next pages are `[4, 5, 6]`, then `[1, 2, 3]`, whose
+`hasPreviousPage` is false. With no cap, `last: 50` returns all nine employees
+in one page with `hasPreviousPage: false`. Rows within each page retain the
+requested ascending order; backward paging does not reverse that order.
 
-To fetch the next page, pass the `endCursor` value as the `after` argument:
+### Paging rules and edge cases
 
-```graphql
-{
-  orders(first: 10 after: "<endCursor value>" sort_by: "order_date" sort_dir: "desc") {
-    edges {
-      node {
-        order_id
-        order_date
-        freight
-      }
-    }
-    pageInfo {
-      hasNextPage
-      endCursor
-    }
-  }
-}
-```
+- Keep the same `where`, `sort_by`, `sort_dir`, and authorization context for
+  every page. Prefer a unique sort field such as `employee_id` or `order_id`.
+- These cursors are not a database snapshot. Concurrent inserts, deletes, or
+  sort-field changes can cause missing or repeated records across requests.
+- If both sizes are omitted or null, a configured cap supplies `first`.
+  `first: 0` or `last: 0` explicitly requests zero rows; it does not select
+  the default size. Zero is not a valid INI value for `MAX_PAGE_SIZE`.
+- To restore uncapped behavior, remove or comment out `MAX_PAGE_SIZE` and
+  restart. Do not set it to `0`, a blank value, or the string `None`.
+- Limits apply separately to each entity connection, not to the total number
+  of rows across aliases or related fields in a response. Row/entity access
+  policies still apply before the returned page is assembled.
+
+See the [configuration reference](grapinator_ini.md#graphene) for deployment
+settings and the [demo queries](demo_queries.md#pagination-with-and-without-a-server-cap)
+for a compact set/unset comparison.
 
 ---
 
