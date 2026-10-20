@@ -665,6 +665,25 @@ class TestSettingsDeprecatedWsgiKeys(unittest.TestCase):
 # [GRAPHENE] MAX_PAGE_SIZE / MAX_IN_LIST_SIZE (issue #43)
 # ---------------------------------------------------------------------------
 
+class TestSettingsJwksCacheTtl(unittest.TestCase):
+    """AUTH_JWKS_CACHE_TTL must be positive: PyJWKClient rejects other values."""
+
+    def test_default_ttl(self):
+        self.assertEqual(_make_mock_settings({}).AUTH_JWKS_CACHE_TTL, 300)
+
+    def test_positive_ttl_accepted(self):
+        s = _make_mock_settings({('AUTH', 'AUTH_JWKS_CACHE_TTL'): '1'})
+        self.assertEqual(s.AUTH_JWKS_CACHE_TTL, 1)
+
+    def test_zero_or_negative_ttl_rejected(self):
+        for value in ('0', '-1'):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    RuntimeError, 'AUTH_JWKS_CACHE_TTL must be a positive integer'
+                ):
+                    _make_mock_settings({('AUTH', 'AUTH_JWKS_CACHE_TTL'): value})
+
+
 class TestSettingsGrapheneLimits(unittest.TestCase):
 
     def test_defaults(self):

@@ -35,7 +35,8 @@ Token signing
 **Production** — configure ``AUTH_JWKS_URI`` and optionally ``AUTH_ISSUER``
 / ``AUTH_AUDIENCE``.  ``PyJWKClient`` fetches and caches the public keys from
 the JWKS endpoint; ``jwt.decode`` performs RFC 7519 validation.  Works with
-any OIDC-compliant IdP.
+any OIDC-compliant IdP.  If the JWKS client cannot be constructed, startup
+fails with ``RuntimeError`` rather than accepting tokens any other way.
 
 **Local development** — set ``AUTH_DEV_SECRET`` (HS256).  No JWKS endpoint
 is needed; tokens are signed/validated with a shared HMAC-SHA256 key.
@@ -168,6 +169,7 @@ class BearerAuthMiddleware:
         # Initialise the JWKS client only when a URI is configured and no
         # test key override is present.
         jwks_uri = getattr(auth_settings, 'AUTH_JWKS_URI', None)
+        self._jwks_configured = bool(jwks_uri)
         cache_ttl = getattr(auth_settings, 'AUTH_JWKS_CACHE_TTL', 300)
         if jwks_uri and _signing_key is None:
             try:
@@ -177,12 +179,21 @@ class BearerAuthMiddleware:
                     cache_jwk_set=True,
                     lifespan=cache_ttl,
                 )
-                logger.info(
-                    'BearerAuthMiddleware: JWKS client configured uri=%s cache_ttl=%ss',
-                    jwks_uri, cache_ttl,
-                )
             except Exception as exc:
-                logger.warning('BearerAuthMiddleware: could not initialise PyJWKClient: %s', exc)
+                # Fail closed: never fall back to AUTH_DEV_SECRET when a JWKS
+                # endpoint is configured but its client cannot be built.
+                logger.critical('BearerAuthMiddleware: could not initialise PyJWKClient: %s', exc)
+                raise RuntimeError(
+                    f'Could not initialise the JWKS client for AUTH_JWKS_URI: {exc}'
+                ) from exc
+            logger.info(
+                'BearerAuthMiddleware: JWKS client configured uri=%s cache_ttl=%ss',
+                jwks_uri, cache_ttl,
+            )
+            if self.dev_secret:
+                logger.warning(
+                    'BearerAuthMiddleware: AUTH_DEV_SECRET is ignored because AUTH_JWKS_URI is set'
+                )
         elif self.dev_secret:
             logger.warning(
                 'BearerAuthMiddleware: using AUTH_DEV_SECRET (HS256) — local dev only, not for production'
@@ -204,7 +215,8 @@ class BearerAuthMiddleware:
         Validation order:
         1. If a test signing-key override was provided, use it directly.
         2. Else if a JWKS client is configured, use JWKS lookup (production).
-        3. Else if a dev secret is configured, decode with HS256 (local dev).
+        3. Else if a dev secret is configured and no ``AUTH_JWKS_URI`` is set,
+           decode with HS256 (local dev).
 
         :raises Exception: Any ``jwt`` exception on validation failure.
         :returns: Decoded JWT payload dict.
@@ -230,8 +242,9 @@ class BearerAuthMiddleware:
                 token, signing_key.key, algorithms=self.algorithms, **decode_kwargs
             )
 
-        if self.dev_secret:
-            # Local development path — HS256 with shared secret
+        if self.dev_secret and not self._jwks_configured:
+            # Local development path — HS256 with shared secret.  Never used
+            # when AUTH_JWKS_URI is set, even if the JWKS client is missing.
             return _jwt.decode(
                 token, self.dev_secret, algorithms=['HS256'], **decode_kwargs
             )

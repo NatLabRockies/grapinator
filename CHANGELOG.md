@@ -38,6 +38,18 @@ All notable changes to Grapinator
   the entity and the token `sub` claim, to measure remaining usage before a
   future major release removes them.
 
+### Security
+
+- **JWKS failures no longer fall back to `AUTH_DEV_SECRET`**
+  (GHSA-fqfc-cjc9-3ww9). With `AUTH_JWKS_URI` set, a `PyJWKClient` that
+  could not be built was only logged, and tokens were then validated with
+  `AUTH_DEV_SECRET` (HS256), so anyone who knew the dev secret could forge
+  tokens with any roles. Affected v2.1.8 through v2.1.14. Now a JWKS client
+  failure stops startup with `RuntimeError`, and the dev-secret path is never
+  used while `AUTH_JWKS_URI` is set; a warning is logged if both are set.
+- **`AUTH_JWKS_CACHE_TTL` must be a positive integer** — `0` or negative
+  values (which `PyJWKClient` rejects) now fail at startup.
+
 ### Migration notes
 
 - Supplying both forms filters with `(legacy conditions joined by logic) AND

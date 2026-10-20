@@ -15,7 +15,7 @@ Grapinator supports IdP-agnostic JWT bearer token authentication via the `[AUTH]
 | `AUTH_AUDIENCE` | — | Expected `aud` claim in the JWT |
 | `AUTH_ALGORITHMS` | `RS256` | Comma-separated list of accepted signing algorithms (`none` is always rejected) |
 | `AUTH_ROLES_CLAIM` | `roles` | Dotted path to the roles list inside the JWT payload (e.g. `realm_access.roles`) |
-| `AUTH_JWKS_CACHE_TTL` | `300` | Seconds to cache the fetched JWK set |
+| `AUTH_JWKS_CACHE_TTL` | `300` | Seconds to cache the fetched JWK set. Must be a positive integer; other values fail at startup |
 | `GRAPHIQL_ACCESS` | `authenticated` | `authenticated` — IDE requires token; `open` — IDE served without auth; `off` — IDE disabled |
 | `AUTH_DEV_SECRET` | — | HS256 shared secret for local dev tokens — **never use in production** |
 

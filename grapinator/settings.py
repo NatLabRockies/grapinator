@@ -491,6 +491,11 @@ class Settings(object):
                         'kills the worker.'
                     )
 
+            if self.AUTH_JWKS_CACHE_TTL <= 0:
+                raise RuntimeError(
+                    'AUTH_JWKS_CACHE_TTL must be a positive integer (seconds).'
+                )
+
             if self.AUTH_DEV_SECRET:
                 _DEFAULT_DEV_SECRET = 'change-me-local-dev-only'
                 if (self.AUTH_DEV_SECRET == _DEFAULT_DEV_SECRET
