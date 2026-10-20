@@ -165,8 +165,15 @@ class TestSettingsLoadedValues(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Re-use the already-loaded settings singleton from the package init.
+        import configparser
+        import grapinator
         from grapinator import settings
         cls.settings = settings
+        # Expected values come from the ini file the package actually loaded
+        # (GRAPINATOR_CONFIG may point elsewhere), read with a plain parser
+        # rather than through Settings, so a broken copy is detected.
+        cls.ini = configparser.ConfigParser(interpolation=None)
+        cls.ini.read(grapinator._config_file)
 
     def test_flask_api_endpoint_starts_with_slash(self):
         self.assertTrue(self.settings.FLASK_API_ENDPOINT.startswith('/'))
@@ -174,6 +181,14 @@ class TestSettingsLoadedValues(unittest.TestCase):
     def test_sqlalchemy_uri_is_string(self):
         self.assertIsInstance(self.settings.SQLALCHEMY_DATABASE_URI, str)
         self.assertTrue(len(self.settings.SQLALCHEMY_DATABASE_URI) > 0)
+        db_type = self.ini.get('SQLALCHEMY', 'DB_TYPE')
+        db_connect = self.ini.get('SQLALCHEMY', 'DB_CONNECT')
+        uri = str.__str__(self.settings.SQLALCHEMY_DATABASE_URI)  # bypass redaction
+        if 'sqlite' in db_type:
+            self.assertEqual(uri, f'{db_type}://{db_connect}')
+        else:
+            self.assertTrue(uri.startswith(f'{db_type}://'))
+            self.assertTrue(uri.endswith(f'@{db_connect}'))
 
     def test_sqlite_uri_has_no_credentials(self):
         """For SQLite the URI must not contain user:password@ credentials."""
@@ -187,11 +202,39 @@ class TestSettingsLoadedValues(unittest.TestCase):
     def test_cors_settings_are_populated(self):
         self.assertIsNotNone(self.settings.CORS_EXPOSE_ORIGINS)
         self.assertIsNotNone(self.settings.CORS_ALLOW_METHODS)
+        for key in ('CORS_EXPOSE_ORIGINS', 'CORS_ALLOW_METHODS'):
+            with self.subTest(key=key):
+                self.assertEqual(getattr(self.settings, key), self.ini.get('CORS', key))
 
     def test_http_security_headers_populated(self):
         self.assertIsNotNone(self.settings.HTTP_HEADERS_XFRAME)
         self.assertIsNotNone(self.settings.HTTP_HEADERS_XSS_PROTECTION)
         self.assertIsNotNone(self.settings.HTTP_HEADER_CACHE_CONTROL)
+        for key in ('HTTP_HEADERS_XFRAME', 'HTTP_HEADERS_XSS_PROTECTION',
+                    'HTTP_HEADER_CACHE_CONTROL'):
+            with self.subTest(key=key):
+                self.assertEqual(getattr(self.settings, key), self.ini.get('HTTP_HEADERS', key))
+
+    def test_bundled_ini_security_values(self):
+        """Pin the shipped defaults so an accidental edit to grapinator.ini fails."""
+        import grapinator
+        from os import path
+        bundled = path.join(path.dirname(grapinator.__file__), 'resources', 'grapinator.ini')
+        if path.abspath(grapinator._config_file) != path.abspath(bundled):
+            self.skipTest('GRAPINATOR_CONFIG points at a non-bundled ini file')
+        self.assertEqual(self.settings.CORS_EXPOSE_ORIGINS, '*')
+        self.assertEqual(self.settings.CORS_ALLOW_METHODS, 'GET, POST')
+        self.assertEqual(self.settings.HTTP_HEADERS_XFRAME, 'sameorigin')
+        self.assertEqual(self.settings.HTTP_HEADERS_XSS_PROTECTION, '1; mode=block')
+        self.assertEqual(
+            self.settings.HTTP_HEADER_CACHE_CONTROL,
+            'no-cache, no-store, must-revalidate, max-age=0, s-maxage=0, '
+            'pre-check=0, post-check=0, pragma: no-cache',
+        )
+        self.assertEqual(
+            str.__str__(self.settings.SQLALCHEMY_DATABASE_URI),
+            'sqlite+pysqlite:///db/northwind.db',
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +659,64 @@ class TestSettingsDeprecatedWsgiKeys(unittest.TestCase):
         self.assertEqual(s.WSGI_MAX_REQUEST_BODY_SIZE, 1048576)
         self.assertTrue(any('deprecated' in r.getMessage().lower() for r in cm.records))
 
+
+
+# ---------------------------------------------------------------------------
+# [GRAPHENE] MAX_PAGE_SIZE / MAX_IN_LIST_SIZE (issue #43)
+# ---------------------------------------------------------------------------
+
+class TestSettingsGrapheneLimits(unittest.TestCase):
+
+    def test_defaults(self):
+        s = _make_mock_settings({})
+        self.assertIsNone(s.MAX_PAGE_SIZE)
+        self.assertEqual(s.MAX_IN_LIST_SIZE, 500)
+
+    def test_explicit_values(self):
+        s = _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): '250',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1000',
+        })
+        self.assertEqual(s.MAX_PAGE_SIZE, 250)
+        self.assertEqual(s.MAX_IN_LIST_SIZE, 1000)
+
+    def test_options_can_be_configured_independently(self):
+        for key, other, default in (
+            ('MAX_PAGE_SIZE', 'MAX_IN_LIST_SIZE', 500),
+            ('MAX_IN_LIST_SIZE', 'MAX_PAGE_SIZE', None),
+        ):
+            with self.subTest(key=key):
+                configured = _make_mock_settings({('GRAPHENE', key): '1'})
+                self.assertEqual(getattr(configured, key), 1)
+                self.assertEqual(getattr(configured, other), default)
+
+    def test_whitespace_is_stripped_and_page_limit_has_no_oracle_cap(self):
+        configured = _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): ' 1001\t',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '\t1000 ',
+        })
+        self.assertEqual(configured.MAX_PAGE_SIZE, 1001)
+        self.assertEqual(configured.MAX_IN_LIST_SIZE, 1000)
+
+    def test_configured_instance_does_not_change_next_instances_defaults(self):
+        _make_mock_settings({
+            ('GRAPHENE', 'MAX_PAGE_SIZE'): '1',
+            ('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1',
+        })
+        defaults = _make_mock_settings({})
+        self.assertIsNone(defaults.MAX_PAGE_SIZE)
+        self.assertEqual(defaults.MAX_IN_LIST_SIZE, 500)
+
+    def test_invalid_values_fail_at_startup(self):
+        for key in ('MAX_PAGE_SIZE', 'MAX_IN_LIST_SIZE'):
+            for value in ('abc', '0', '-5', '1.5', '', ' ', 'true', '1e3', '0x10'):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(RuntimeError, f'{key} must be a positive integer.'):
+                        _make_mock_settings({('GRAPHENE', key): value})
+
+    def test_in_list_size_above_oracle_limit_fails(self):
+        with self.assertRaisesRegex(RuntimeError, 'MAX_IN_LIST_SIZE'):
+            _make_mock_settings({('GRAPHENE', 'MAX_IN_LIST_SIZE'): '1001'})
 
 if __name__ == '__main__':
     unittest.main()

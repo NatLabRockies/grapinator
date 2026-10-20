@@ -136,6 +136,13 @@ class TestRequestScopedOrmPolicies(unittest.TestCase):
 
         self._set_context(['reader'], {'organization': {'id': 'beta'}})
         self.assertIsNotNone(self.session.get(_PolicyItem, 2))
+        # Precondition: the beta row is in the identity map, so a plain
+        # session.get() for it would skip SQL (and the policy) entirely.  The
+        # identity map is weak-referencing, so hold the instance for the test.
+        from sqlalchemy.orm.util import identity_key
+        cached = self.session.get(_PolicyItem, 2)
+        self.assertIs(self.session.identity_map.get(identity_key(_PolicyItem, 2)), cached)
+        self.assertEqual((cached.id, cached.tenant_id), (2, 'beta'))
         self._set_context(['reader'], {'organization': {'id': 'alpha'}})
         statements = []
 
@@ -151,6 +158,70 @@ class TestRequestScopedOrmPolicies(unittest.TestCase):
 
         self.assertIsNone(hidden)
         self.assertTrue(any('SELECT' in statement.upper() for statement in statements))
+
+
+class TestRegisterModelPolicyValidation(unittest.TestCase):
+    """
+    A misconfigured entity policy must fail at startup with a ValueError
+    rather than register weaker rules than the schema author intended.
+    """
+
+    def setUp(self):
+        from grapinator.security import _MODEL_POLICIES
+        patcher = patch.dict(_MODEL_POLICIES, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.policies = _MODEL_POLICIES
+
+    def test_non_dict_row_auth_claims_rejected(self):
+        for claims in (['tenant_id'], 'tenant_id', ('tenant_id', 'organization.id')):
+            with self.subTest(claims=claims):
+                with self.assertRaisesRegex(ValueError, 'ROW_AUTH_CLAIMS must map'):
+                    register_model_policy(_PolicyParent, row_auth_claims=claims)
+                self.assertNotIn(_PolicyParent, self.policies)
+
+    def test_string_roles_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'must be a list of role names'):
+            register_model_policy(_PolicyParent, roles='reader')
+        self.assertNotIn(_PolicyParent, self.policies)
+
+    def test_unmapped_or_non_column_attribute_rejected(self):
+        # 'missing' does not exist, 'items' is a relationship, '__tablename__'
+        # is a plain class attribute: none is a mapped column.
+        for attribute in ('missing', 'items', '__tablename__'):
+            with self.subTest(attribute=attribute):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"attribute '{attribute}' is not a mapped column .* on _PolicyParent",
+                ):
+                    register_model_policy(
+                        _PolicyParent, row_auth_claims={attribute: 'organization.id'}
+                    )
+                self.assertNotIn(_PolicyParent, self.policies)
+
+    def test_blank_or_non_string_claim_path_rejected(self):
+        for claim_path in ('', '   ', None, 7):
+            with self.subTest(claim_path=claim_path):
+                with self.assertRaisesRegex(ValueError, "attribute 'id' is not a mapped"):
+                    register_model_policy(_PolicyParent, row_auth_claims={'id': claim_path})
+                self.assertNotIn(_PolicyParent, self.policies)
+
+    def test_valid_policy_registers(self):
+        register_model_policy(
+            _PolicyParent, roles=['reader', 'auditor'],
+            row_auth_claims={'id': 'organization.parent_id'},
+        )
+        self.assertEqual(self.policies[_PolicyParent], {
+            'roles': ('reader', 'auditor'),
+            'row_auth_claims': {'id': 'organization.parent_id'},
+        })
+
+    def test_empty_policy_registers_without_restrictions(self):
+        register_model_policy(_PolicyParent)
+        self.assertEqual(self.policies[_PolicyParent], {
+            'roles': (), 'row_auth_claims': {},
+        })
+
 
 def _mock_settings(**overrides):
     s = MagicMock()

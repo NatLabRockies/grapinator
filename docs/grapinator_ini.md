@@ -49,19 +49,9 @@ At startup, Grapinator reads the encryption key from the `GQLAPI_CRYPT_KEY` envi
 and passes it to `CryptoConfigParser`.  When the parser encounters a value wrapped in `enc(...)`,
 it decrypts the inner token automatically before returning the value.
 
-## [GRAPHENE]
+CryptoConfig command-line options:
 
-GraphQL schema configuration.
-
-| Setting | Type | Description |
-|---------|------|-------------|
-| `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
-
-**Example:**
-```ini
-[GRAPHENE]
-GQL_SCHEMA = schema.dct
-```
+```text
 use: cryptocfg.py [options]
 where options include:
     --decrypt= | -d   decrypt the string, requires -i and -p
@@ -80,12 +70,87 @@ GraphQL schema configuration.
 | Setting | Type | Description |
 |---------|------|-------------|
 | `GQL_SCHEMA` | path | Filename (or path) of the schema dictionary file (`.dct`). A bare filename (e.g. `schema.dct`) is resolved relative to the directory containing the active INI file. An absolute path is used as-is. See [schema_docs.md](schema_docs.md) for the file format. |
+| `MAX_PAGE_SIZE` | integer | *Optional, unset by default (unlimited).* Upper bound for `first` / `last` on every entity connection. Larger values are **clamped** to this limit rather than rejected, and a request with neither `first` nor `last` gets `first = MAX_PAGE_SIZE`. Clamped requests are logged at DEBUG. Must be a positive integer. |
+| `MAX_IN_LIST_SIZE` | integer | *Optional, default `500`.* Maximum number of values in a `where` `in` / `notIn` list. Longer lists return `List exceeds the maximum of N values.` before any SQL runs. Must be a positive integer no larger than `1000` (Oracle rejects `IN` lists over 1000 values with ORA-01795). |
+
+Invalid values (non-integer, zero, negative, or `MAX_IN_LIST_SIZE` above 1000)
+stop the service at startup.
+
+> **Clients must page.** Because `MAX_PAGE_SIZE` clamps instead of returning an
+> error, a client that ignores `pageInfo` silently receives a truncated result.
+> Clients should check `pageInfo.hasNextPage` / `hasPreviousPage` and continue
+> with the returned cursors. v2.1.14 removed an earlier page-size setting; this
+> one is opt-in and leaves pagination unchanged when unset.
 
 **Example:**
 ```ini
 [GRAPHENE]
 GQL_SCHEMA = schema.dct
+MAX_PAGE_SIZE = 500
+MAX_IN_LIST_SIZE = 500
 ```
+
+### Pagination with the cap unset or set
+
+Omit `MAX_PAGE_SIZE` for uncapped behavior; set a positive integer to enforce a
+per-connection cap. Restart the service after changing the active INI file.
+
+**Unset (the default):**
+
+```ini
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
+# No MAX_PAGE_SIZE entry: first/last are not capped.
+MAX_IN_LIST_SIZE = 500
+```
+
+**Set (three rows per connection for this example):**
+
+```ini
+[GRAPHENE]
+GQL_SCHEMA = schema.dct
+MAX_PAGE_SIZE = 3
+MAX_IN_LIST_SIZE = 500
+```
+
+Run this same query with either configuration:
+
+```graphql
+query PageSizeComparison {
+    defaultPage: employees(sort_by: "employee_id") {
+        edges { node { employee_id } }
+        pageInfo { hasNextPage endCursor }
+    }
+    largePage: employees(first: 50, sort_by: "employee_id") {
+        edges { node { employee_id } }
+        pageInfo { hasNextPage endCursor }
+    }
+    smallPage: employees(first: 2, sort_by: "employee_id") {
+        edges { node { employee_id } }
+        pageInfo { hasNextPage endCursor }
+    }
+}
+```
+
+For the unmodified Northwind sample and a caller authorized to see all nine
+employees:
+
+| Selection | MAX_PAGE_SIZE unset | MAX_PAGE_SIZE = 3 |
+|---|---|---|
+| `defaultPage` (no size) | IDs 1-9; `hasNextPage: false` | IDs 1-3; `hasNextPage: true` |
+| `largePage` (`first: 50`) | IDs 1-9; `hasNextPage: false` | IDs 1-3; `hasNextPage: true` |
+| `smallPage` (`first: 2`) | IDs 1-2; `hasNextPage: true` | IDs 1-2; `hasNextPage: true` |
+
+Continue each selection independently using its returned `endCursor` as `after`.
+For backward paging, use `last` / `before` and continue with `startCursor` while
+`hasPreviousPage` is true. A cap does not change the filter or sort order, and it
+does not limit the number of values in an `in` list; that is `MAX_IN_LIST_SIZE`.
+Omitted or null page sizes select the default cap; explicit zero page sizes
+return zero rows. To disable the cap, remove the setting rather than entering
+`0`, a blank value, or `None` (all invalid at startup).
+
+See the [forward/backward pagination walkthrough](graphiql_user_guide.md#pagination)
+and [worked where examples](graphiql_user_guide.md#worked-filter-examples).
 
 ---
 

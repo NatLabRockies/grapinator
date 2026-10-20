@@ -2,6 +2,85 @@
 
 This directory contains a comprehensive testing framework for GraphQL APIs, specifically designed for the Northwind database but adaptable to any GraphQL endpoint. The suite includes query execution, result validation, performance testing, and endpoint comparison capabilities.
 
+## Local Python Regression Tests
+
+From the repository root, activate the project virtual environment and run:
+
+```bash
+GQLAPI_CRYPT_KEY=testkey python -m unittest discover -s tests -t . -v
+```
+
+The Flask tests use an in-process client, so no HTTP server is needed. Tests
+that query Northwind require the sample database at the location configured
+by `DB_CONNECT` in `grapinator/resources/grapinator.ini`. The default SQLite URI
+resolves to `db/northwind.db` relative to the working directory.
+Boolean and literal-pattern tests use in-memory SQLite.
+The default schema has no entity-level roles, so two role-logging tests skip;
+entity access denial is tested separately with an explicitly registered policy.
+
+### Typed Filtering and Page Limits (Issue #43)
+
+Run the focused regressions with:
+
+```bash
+GQLAPI_CRYPT_KEY=testkey python -m unittest \
+  tests.test_where_filter \
+  tests.test_settings_class.TestSettingsGrapheneLimits \
+  tests.test_flask_app.TestInputSuggestionSanitization -v
+```
+
+Coverage includes:
+
+| Area | Regression Cases |
+| --- | --- |
+| Scalar filters | Operator and operand-type contracts for String, ID, Int, BigInt, Float, Decimal, Date, DateTime, Time, and Boolean; runtime string, integer, float, date/time, Boolean, and null comparisons |
+| Boolean logic | Implicit AND, nested AND/OR/NOT, empty-object/list identities, duplicate membership values, omitted/null variables |
+| Validation | Invalid input shapes and types, null operands/list members, depth/predicate/list boundaries, nested and variable-based limits, rejection before SQL |
+| Schema generation | Per-entity recursive inputs, cached scalar types, hidden/non-queryable/resolver/non-scalar exclusions, reserved names and type collisions |
+| Security | Literal SQL-injection payloads, protected/unknown field parity, nested variable errors, role-isolated schema caches, row/entity policy enforcement |
+| Error responses | Role-aware suggestion removal, preserved authenticated operator suggestions, unchanged data/error metadata |
+| Legacy filters | Shared operators, wildcard compatibility, AND combination with `where`, deprecation introspection and value-free client logging |
+| Relay pagination | Optional/default caps, first/last boundaries, zero/null sizes, forward/backward cursors, filtering/sorting interactions, empty connections, input immutability |
+| Settings | Independent defaults, positive-integer validation, whitespace, Oracle's 1000-item boundary, configuration-instance isolation |
+
+### Security Requirement Checklist (Issue #46)
+
+Each security-relevant feature, the test class that covers it, and one case
+that must be allowed and one that must be rejected. A feature without both
+columns filled is a coverage gap.
+
+| Feature | Test class | Must allow | Must reject |
+| --- | --- | --- | --- |
+| Bearer auth, `off` mode | `test_bearer_auth.TestBearerAuthMiddlewareOffMode` | `test_passes_request_with_invalid_token` | `test_sets_authenticated_false_in_environ` (never marks a caller authenticated) |
+| Bearer auth, `mixed` mode | `test_bearer_auth.TestBearerAuthMiddlewareMixedMode` | `test_no_token_passes_through` | `test_invalid_token_returns_401`, `test_expired_token_returns_401` |
+| Bearer auth, `required` mode | `test_bearer_auth.TestBearerAuthMiddlewareRequiredMode` | `test_valid_token_passes_through` | `test_no_token_returns_401` |
+| JWT algorithms | `test_security.TestJwtNoneAlgorithmBlocked` | `test_valid_hs256_token_still_accepted` | `test_none_algorithm_token_rejected_returns_401` |
+| JWKS (production key lookup) | `test_bearer_auth.TestBearerAuthMiddlewareJwks` | `test_token_signed_with_jwks_key_is_accepted` | `test_token_signed_with_other_key_is_rejected`, `test_wrong_issuer_is_rejected`, `test_wrong_audience_is_rejected`, `test_expired_token_is_rejected` |
+| GraphiQL access | `test_bearer_auth.TestGraphiqlAccessControl` | `test_graphiql_open_bypasses_auth_for_ide_get` | `test_get_with_query_param_is_not_ide_request` |
+| Entity roles | `test_bearer_auth.TestEntityLevelRBAC` | `test_entity_with_matching_role_runs_query_normally` | `test_entity_with_missing_role_returns_empty_queryset` |
+| Field roles (schema) | `test_bearer_auth.TestRoleSpecificGraphQLSchema` | `test_only_matching_role_sees_protected_output_and_filter_argument` | `test_protected_field_selection_is_validation_error_without_role` |
+| Field roles (resolver) | `test_bearer_auth.TestRoleFieldResolver` | `test_matching_role_returns_attribute_value` | `test_nonmatching_role_returns_none` |
+| Row policies | `test_security.TestRequestScopedOrmPolicies` | `test_row_policy_scopes_direct_queries` | `test_missing_row_claim_fails_closed` |
+| Policy configuration | `test_security.TestRegisterModelPolicyValidation` | `test_valid_policy_registers` | `test_string_roles_rejected`, `test_unmapped_or_non_column_attribute_rejected` |
+| `where` RBAC | `test_where_filter.TestWhereRbac` | `test_hr_role_can_filter_on_protected_column` | `test_protected_and_unknown_columns_are_indistinguishable` |
+| `where` cannot widen policies | `test_where_filter.TestWhereCannotWidenPolicies` | `test_row_policy_applies_inside_or_and_not` (only permitted rows) | `test_entity_roles_still_deny` |
+| Sort RBAC | `test_connection_field.TestSorting`, `test_security.TestSortByValidation` | `test_matching_role_can_filter_and_sort_protected_column`, `test_valid_sort_column_accepted` | `test_protected_sort_is_ignored_without_matching_role`, `test_private_attribute_rejected` |
+| Error masking | `test_flask_app.TestGraphQLErrorMasking` | `test_client_errors_keep_their_safe_message` | `test_database_errors_are_masked_at_http_boundary` |
+
+For optional line and branch coverage, install the `coverage` development tool
+and run:
+
+```bash
+python -m pip install coverage
+GQLAPI_CRYPT_KEY=testkey python -m coverage run --branch --source=grapinator \
+  -m unittest discover -s tests -t .
+python -m coverage report -m
+```
+
+These local checks do not certify behavior against live Oracle/MySQL databases
+or an external Keycloak deployment; use the service-backed RBAC scripts and
+endpoint comparison tools for those environments.
+
 ## 📁 Files Overview
 
 ### Core Test Files

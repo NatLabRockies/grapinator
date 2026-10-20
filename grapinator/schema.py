@@ -14,11 +14,16 @@ column definitions stored in ``schema_settings``.  At import time this module:
 
 Filtering, sorting, and result paging are handled centrally in
 :class:`MyConnectionField` so that every generated entity benefits from the
-same query capabilities without any per-entity boilerplate.
+same query capabilities without any per-entity boilerplate.  Each connection
+accepts a typed ``where`` filter (``<Entity>Filter`` built from per-scalar
+``<Scalar>Filter`` input types) alongside the deprecated per-column
+arguments, ``matches``, and ``logic``.
 """
 
 import re
-from sqlalchemy import and_, or_, desc, asc, false as sql_false, select
+from sqlalchemy import (
+    and_, or_, not_, desc, asc, false as sql_false, true as sql_true, select,
+)
 from sqlalchemy import inspect as sqlalchemy_inspect
 import graphene
 from graphene import relay
@@ -44,7 +49,7 @@ from graphql import (
 )
 import datetime
 import logging
-from grapinator import schema_settings
+from grapinator import settings, schema_settings
 from grapinator.model import *
 from grapinator.security import register_model_policy
 
@@ -63,6 +68,296 @@ _FIELD_AUTH_ROLES = {}
 _FILTER_FIELD_AUTH_ROLES = {}
 _SORT_FIELD_AUTH_ROLES = {}
 _QUERY_FILTER_AUTH_ROLES = {}
+# Maps <Entity>Filter input type names to {column: roles} so per-role schemas
+# and validation hide protected columns inside ``where``.
+_WHERE_FIELD_AUTH_ROLES = {}
+_WHERE_FILTER_TYPES = {}
+
+_LEGACY_FILTER_DEPRECATION = 'Use the where argument instead.'
+_REGEX_MAX_LENGTH = 200
+# Fixed guardrails for ``where`` trees, enforced before any SQL runs.
+_WHERE_MAX_DEPTH = 8
+_WHERE_MAX_PREDICATES = 100
+_WHERE_LOGICAL_KEYS = ('and', 'or', 'not')
+_INVALID_FILTER_MESSAGE = 'Invalid filter argument.'
+
+# Operators exposed by each <Scalar>Filter type.  Scalars not listed here get
+# the equality operators only.
+_EQUALITY_OPERATORS = ('eq', 'ne', 'in', 'notIn', 'isNull')
+_COMPARISON_OPERATORS = ('eq', 'ne', 'in', 'notIn', 'gt', 'gte', 'lt', 'lte', 'isNull')
+_SCALAR_FILTER_OPERATORS = {
+    'String': (
+        'eq', 'ne', 'in', 'notIn', 'contains', 'startsWith', 'endsWith', 'isNull',
+    ),
+    'ID': _EQUALITY_OPERATORS,
+    'Int': _COMPARISON_OPERATORS,
+    'BigInt': _COMPARISON_OPERATORS,
+    'Float': _COMPARISON_OPERATORS,
+    'Decimal': _COMPARISON_OPERATORS,
+    'Date': _COMPARISON_OPERATORS,
+    'DateTime': _COMPARISON_OPERATORS,
+    'Time': _COMPARISON_OPERATORS,
+    'Boolean': ('eq', 'ne', 'isNull'),
+}
+_WHERE_OPERATORS = {
+    operator_name
+    for operators in _SCALAR_FILTER_OPERATORS.values()
+    for operator_name in operators
+}
+
+# Legacy ``matches`` values mapped onto the shared operator names.
+_LEGACY_MATCHES_OPERATORS = {
+    'exact': 'eq', 'eq': 'eq',
+    'regex': 'regex', 're': 'regex',
+    'startswith': 'startsWith', 'sw': 'startsWith',
+    'endswith': 'endsWith', 'ew': 'endsWith',
+    'lt': 'lt', 'lte': 'lte', 'gt': 'gt', 'gte': 'gte', 'ne': 'ne',
+}
+
+_COMPARISON_EXPRESSIONS = {
+    'eq': lambda column, value: column == value,
+    'ne': lambda column, value: column != value,
+    'gt': lambda column, value: column > value,
+    'gte': lambda column, value: column >= value,
+    'lt': lambda column, value: column < value,
+    'lte': lambda column, value: column <= value,
+    'in': lambda column, value: column.in_(value),
+    'notIn': lambda column, value: column.not_in(value),
+}
+
+
+def _column_condition(column, operator_name, value, escape_like=True):
+    """
+    Map one ``(column, operator, value)`` triple to a SQLAlchemy expression.
+
+    Shared by the legacy ``matches`` arguments and ``where`` so both paths
+    produce the same SQL.  ``contains`` / ``startsWith`` / ``endsWith`` are
+    case-insensitive; ``where`` escapes LIKE metacharacters in the value,
+    while the legacy path (``escape_like=False``) keeps its historical
+    wildcard behaviour.
+    """
+    if operator_name in ('contains', 'startsWith', 'endsWith'):
+        if escape_like:
+            method = {
+                'contains': column.icontains,
+                'startsWith': column.istartswith,
+                'endsWith': column.iendswith,
+            }[operator_name]
+            return method(str(value), autoescape=True)
+        pattern = {
+            'contains': '%{}%',
+            'startsWith': '{}%',
+            'endsWith': '%{}',
+        }[operator_name].format(value)
+        return column.ilike(pattern)
+    if operator_name == 'regex':
+        # Cap regex length to prevent ReDoS via catastrophic backtracking
+        # in the database engine from client-supplied patterns.
+        if len(str(value)) > _REGEX_MAX_LENGTH:
+            logger.warning(
+                'get_query: regex pattern too long (%d chars) — rejected',
+                len(str(value)),
+            )
+            raise ClientError('Regex pattern exceeds maximum allowed length (200 chars).')
+        try:
+            re.compile(str(value))
+        except re.error as error:
+            raise ClientError('Invalid regex pattern.') from error
+        return column.regexp_match(value)
+    if operator_name == 'isNull':
+        return column.is_(None) if value else column.is_not(None)
+    return _COMPARISON_EXPRESSIONS[operator_name](column, value)
+
+
+def _legacy_operator(matches, value):
+    """Return the shared operator name for a legacy ``matches`` value."""
+    operator_name = _LEGACY_MATCHES_OPERATORS.get(matches)
+    if operator_name:
+        return operator_name
+    if isinstance(value, list):
+        return 'in'
+    # Opinionated defaults: dates use >=, everything else uses contains.
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return 'gte'
+    return 'contains'
+
+
+def _null_operand_error(operator_name):
+    return ClientError(
+        f"Null is not allowed for '{operator_name}'; use isNull to match null values."
+    )
+
+
+def _where_to_clause(model, where, user_roles):
+    """
+    Translate a ``where`` argument tree into one SQLAlchemy clause.
+
+    Enforces the nesting-depth, predicate-count, and ``MAX_IN_LIST_SIZE``
+    caps and the per-column filter roles while building the clause, so every
+    rejection happens before any SQL is executed.  Columns that are not
+    filterable and columns the caller may not filter on raise the same
+    :class:`ClientError`.
+    """
+    allowed_fields = _SORTABLE_FIELDS.get(model.__name__, ())
+    filter_roles = _FILTER_FIELD_AUTH_ROLES.get(model.__name__, {})
+    roles = set(user_roles)
+    max_in_list_size = settings.MAX_IN_LIST_SIZE
+    predicate_count = 0
+
+    def walk(node, depth):
+        nonlocal predicate_count
+        if depth > _WHERE_MAX_DEPTH:
+            raise ClientError(
+                f'Filter nesting exceeds the maximum depth of {_WHERE_MAX_DEPTH}.'
+            )
+        if not isinstance(node, dict):
+            raise ClientError(_INVALID_FILTER_MESSAGE)
+        clauses = []
+        for key, value in node.items():
+            if key in _WHERE_LOGICAL_KEYS:
+                # Graphene may fill unset logical keys with None.
+                if value is None:
+                    continue
+                if key == 'not':
+                    clauses.append(not_(walk(value, depth + 1)))
+                    continue
+                if not isinstance(value, (list, tuple)):
+                    raise ClientError(_INVALID_FILTER_MESSAGE)
+                parts = [walk(item, depth + 1) for item in value]
+                # and: [] is true; or: [] is false.
+                clauses.append(
+                    and_(sql_true(), *parts) if key == 'and' else or_(sql_false(), *parts)
+                )
+                continue
+
+            required_roles = filter_roles.get(key)
+            if key not in allowed_fields or (
+                required_roles and not roles.intersection(required_roles)
+            ):
+                raise ClientError(_INVALID_FILTER_MESSAGE)
+            if value is None:
+                raise ClientError(
+                    f"Null is not allowed for '{key}'; use isNull to match null values."
+                )
+            if not isinstance(value, dict):
+                raise ClientError(_INVALID_FILTER_MESSAGE)
+            column = getattr(model, key)
+            for operator_name, operand in value.items():
+                if operator_name not in _WHERE_OPERATORS:
+                    raise ClientError(_INVALID_FILTER_MESSAGE)
+                predicate_count += 1
+                if predicate_count > _WHERE_MAX_PREDICATES:
+                    raise ClientError(
+                        f'Filter exceeds the maximum of {_WHERE_MAX_PREDICATES} conditions.'
+                    )
+                if operand is None:
+                    raise _null_operand_error(operator_name)
+                if operator_name in ('in', 'notIn'):
+                    if any(item is None for item in operand):
+                        raise _null_operand_error(operator_name)
+                    if len(operand) > max_in_list_size:
+                        raise ClientError(
+                            f'List exceeds the maximum of {max_in_list_size} values.'
+                        )
+                clauses.append(_column_condition(column, operator_name, operand))
+        return and_(sql_true(), *clauses)
+
+    return walk(where, 1)
+
+
+def _scalar_type_name(scalar):
+    return getattr(getattr(scalar, '_meta', None), 'name', None) or scalar.__name__
+
+
+# Generated filter type names mapped to what they were built for, so a name
+# collision fails the schema build with a clear message.
+_FILTER_TYPE_OWNERS = {
+    clazz['gql_class']: 'GraphQL class' for clazz in schema_settings.get_gql_classes()
+}
+
+
+def _claim_filter_type_name(type_name, owner):
+    existing = _FILTER_TYPE_OWNERS.setdefault(type_name, owner)
+    if existing != owner:
+        raise RuntimeError(
+            f'Filter type name {type_name!r} for {owner} collides with {existing}.'
+        )
+
+
+@lru_cache(maxsize=None)
+def _scalar_filter_type(scalar):
+    """Return the cached ``<Scalar>Filter`` input type for a Graphene scalar."""
+    scalar_name = _scalar_type_name(scalar)
+    type_name = f'{scalar_name}Filter'
+    _claim_filter_type_name(type_name, f'scalar {scalar_name}')
+    operators = _SCALAR_FILTER_OPERATORS.get(scalar_name, _EQUALITY_OPERATORS)
+    fields = {}
+    for operator_name in operators:
+        if operator_name in ('in', 'notIn'):
+            fields[operator_name] = graphene.List(graphene.NonNull(scalar))
+        elif operator_name == 'isNull':
+            fields[operator_name] = graphene.Boolean(
+                description='true matches NULL; false matches NOT NULL.'
+            )
+        else:
+            fields[operator_name] = scalar()
+    fields['Meta'] = type('Meta', (), {
+        'description': f'Conditions on a {scalar_name} column; combined with AND.',
+    })
+    return type(type_name, (graphene.InputObjectType,), fields)
+
+
+def _is_where_column(column):
+    return (
+        column['isqueryable']
+        and column['ishidden'] is False
+        and column['isresolver'] is False
+    )
+
+
+def _make_where_filter_type(gql_class_name, cols):
+    """
+    Build the ``<Entity>Filter`` input type used by the ``where`` argument.
+
+    Includes one ``<Scalar>Filter`` field per queryable, non-hidden,
+    non-resolver scalar column plus self-referencing ``and`` / ``or`` /
+    ``not`` combinators.
+    """
+    type_name = f'{gql_class_name}Filter'
+    _claim_filter_type_name(type_name, f'entity {gql_class_name}')
+    holder = {}
+    fields = {}
+    for column in cols:
+        if not _is_where_column(column):
+            continue
+        scalar = column['type']
+        if not (isinstance(scalar, type) and issubclass(scalar, graphene.Scalar)):
+            continue
+        if column['name'] in _WHERE_LOGICAL_KEYS:
+            raise RuntimeError(
+                f'Column {column["name"]!r} on {gql_class_name} conflicts with '
+                'a where logical operator name.'
+            )
+        fields[column['name']] = graphene.InputField(
+            _scalar_filter_type(scalar), description=column['desc']
+        )
+    fields['and'] = graphene.List(
+        graphene.NonNull(lambda: holder['type']),
+        description='All of these filters must match.',
+    )
+    fields['or'] = graphene.List(
+        graphene.NonNull(lambda: holder['type']),
+        description='At least one of these filters must match.',
+    )
+    fields['not'] = graphene.InputField(
+        lambda: holder['type'], description='This filter must not match.'
+    )
+    fields['Meta'] = type('Meta', (), {
+        'description': f'Filter for {gql_class_name}; keys are combined with AND.',
+    })
+    holder['type'] = type(type_name, (graphene.InputObjectType,), fields)
+    return holder['type']
+
 
 
 def _make_role_field_resolver(field_name, required_roles, resolver=None):
@@ -150,6 +445,8 @@ def _schema_for_role_key(role_key):
                         ast_node=field.ast_node,
                     )
                     for name, field in type_.fields.items()
+                    if not _WHERE_FIELD_AUTH_ROLES.get(type_.name, {}).get(name)
+                    or roles.intersection(_WHERE_FIELD_AUTH_ROLES[type_.name][name])
                 },
                 out_type=type_.out_type,
                 extensions=type_.extensions,
@@ -353,7 +650,14 @@ class MyConnectionField(SQLAlchemyConnectionField):
     +--------------+-----------------------------------+
 
     Date/datetime fields without an explicit ``matches`` value default to
-    ``>=`` (i.e. "on or after").  List values use SQL ``IN``.
+    ``>=`` (i.e. "on or after").
+
+    The per-column arguments, ``matches``, and ``logic`` are deprecated in
+    favour of ``where``.  When both are supplied the result is
+    ``(legacy conditions joined by logic) AND (where conditions)``.
+
+    When ``MAX_PAGE_SIZE`` is configured, ``first`` / ``last`` values above
+    it are clamped and requests without either get ``first = MAX_PAGE_SIZE``.
     """
 
     # Standard Relay pagination arguments that must not be treated as
@@ -385,6 +689,7 @@ class MyConnectionField(SQLAlchemyConnectionField):
         operator = args.pop('logic', None)
         sort_by_name = args.pop('sort_by', None)
         sort_dir = args.pop('sort_dir', None)
+        where = args.pop('where', None)
 
         context = info.context if info.context is not None else {}
         user_roles = context.get('user_roles', []) if isinstance(context, dict) else []
@@ -392,7 +697,28 @@ class MyConnectionField(SQLAlchemyConnectionField):
         for field_name, value in args.items():
             required_roles = filter_roles.get(field_name)
             if value is not None and required_roles and not set(user_roles) & set(required_roles):
-                raise ClientError('Invalid filter argument.')
+                raise ClientError(_INVALID_FILTER_MESSAGE)
+
+        # Translate where before any SQL runs so every rejection is cheap.
+        where_clause = (
+            _where_to_clause(model, where, user_roles) if where is not None else None
+        )
+
+        legacy_filters = sorted(
+            field for field, value in args.items()
+            if field not in cls.RELAY_ARGS and value is not None
+        )
+        if legacy_filters or matches is not None or operator is not None:
+            claims = context.get('user_claims') if isinstance(context, dict) else None
+            logger.info(
+                'Deprecated filter arguments used on %s: %s (client=%s)',
+                model.__name__,
+                legacy_filters + [
+                    name for name, value in (('matches', matches), ('logic', operator))
+                    if value is not None
+                ],
+                claims.get('sub') if isinstance(claims, dict) else None,
+            )
 
         # Build ORDER BY only when a sort column is actually provided/non-None.
         # Only explicitly sortable fields available to the caller may affect
@@ -443,43 +769,12 @@ class MyConnectionField(SQLAlchemyConnectionField):
             # (graphene 3.x sends None for every declared-but-unset field).
             if field in cls.RELAY_ARGS or value is None:
                 continue
-            if matches in ('exact', 'eq'):
-                filter_conditions.append(getattr(model, field) == value)
-            elif matches in ('regex', 're'):
-                # Cap regex length to prevent ReDoS via catastrophic backtracking
-                # in the database engine from client-supplied patterns.
-                if len(str(value)) > 200:
-                    logger.warning(
-                        'get_query: regex pattern too long (%d chars) — rejected',
-                        len(str(value)),
-                    )
-                    raise ClientError('Regex pattern exceeds maximum allowed length (200 chars).')
-                try:
-                    re.compile(str(value))
-                except re.error as error:
-                    raise ClientError('Invalid regex pattern.') from error
-                filter_conditions.append(getattr(model, field).regexp_match(value))
-            elif matches in ('startswith', 'sw'):
-                filter_conditions.append(getattr(model, field).ilike(str(value) + '%'))
-            elif matches in ('endswith', 'ew'):
-                filter_conditions.append(getattr(model, field).ilike('%' + str(value)))
-            elif matches == 'lt':
-                filter_conditions.append(getattr(model, field) < value)
-            elif matches == 'lte':
-                filter_conditions.append(getattr(model, field) <= value)
-            elif matches == 'gt':
-                filter_conditions.append(getattr(model, field) > value)
-            elif matches == 'gte':
-                filter_conditions.append(getattr(model, field) >= value)
-            elif matches == 'ne':
-                filter_conditions.append(getattr(model, field) != value)
-            elif isinstance(value, list):
-                filter_conditions.append(getattr(model, field).in_(value))
-            # Opinionated defaults: dates use >=, everything else uses ilike.
-            elif isinstance(value, (datetime.date, datetime.datetime)):
-                filter_conditions.append(getattr(model, field) >= value)
-            else:
-                filter_conditions.append(getattr(model, field).ilike('%' + str(value) + '%'))
+            filter_conditions.append(_column_condition(
+                getattr(model, field),
+                _legacy_operator(matches, value),
+                value,
+                escape_like=False,
+            ))
 
         if filter_conditions:
             if operator == 'or':
@@ -487,10 +782,47 @@ class MyConnectionField(SQLAlchemyConnectionField):
             else:
                 query = query.filter(and_(*filter_conditions))
 
+        if where_clause is not None:
+            query = query.filter(where_clause)
+
         if sort_clause is not None:
             query = query.order_by(sort_clause)
 
         return query
+
+    @classmethod
+    def resolve_connection(cls, connection_type, model, info, args, resolved):
+        """Clamp ``first`` / ``last`` to ``MAX_PAGE_SIZE`` before paging."""
+        return super().resolve_connection(
+            connection_type, model, info, _clamp_page_args(args, model), resolved
+        )
+
+
+def _clamp_page_args(args, model):
+    """
+    Return Relay args with ``first`` / ``last`` bounded by ``MAX_PAGE_SIZE``.
+
+    Oversized values are clamped rather than rejected so existing clients
+    keep working; ``pageInfo`` and cursors let them fetch the remainder.
+    """
+    limit = settings.MAX_PAGE_SIZE
+    if not limit:
+        return args
+    clamped = dict(args)
+    first = clamped.get('first')
+    last = clamped.get('last')
+    if first is None and last is None:
+        clamped['first'] = limit
+    if first is not None and first > limit:
+        clamped['first'] = limit
+    if last is not None and last > limit:
+        clamped['last'] = limit
+    if clamped.get('first') != first or clamped.get('last') != last:
+        logger.debug(
+            'Page size clamped on %s: first=%s last=%s -> first=%s last=%s (MAX_PAGE_SIZE=%s)',
+            model.__name__, first, last, clamped.get('first'), clamped.get('last'), limit,
+        )
+    return clamped
 
 # Dynamically create all Graphene SQLAlchemyObjectType subclasses defined in
 # the schema dictionary and inject each one into the module namespace.  This
@@ -548,10 +880,18 @@ for clazz in schema_settings.get_gql_classes():
         and not column['ishidden']
         and not column['isresolver']
     }
+    _WHERE_FILTER_TYPES[clazz['gql_class']] = _make_where_filter_type(
+        clazz['gql_class'], clazz['gql_columns']
+    )
+    _WHERE_FIELD_AUTH_ROLES[f"{clazz['gql_class']}Filter"] = {
+        column['name']: column['auth_roles']
+        for column in clazz['gql_columns']
+        if column.get('auth_roles') and _is_where_column(column)
+    }
     _gql_class_count += 1
 logger.info('GraphQL types built: %d', _gql_class_count)
 
-def _make_gql_query_fields(cols):
+def _make_gql_query_fields(cols, where_type=None):
     """
     Build the keyword-argument dict of Graphene field declarations used to
     construct a :class:`MyConnectionField` argument list for one entity.
@@ -563,9 +903,12 @@ def _make_gql_query_fields(cols):
 
     The four standard query-modifier fields (``matches``, ``sort_by``,
     ``logic``, ``sort_dir``) are always appended so every entity connection
-    supports sorting and filter-mode selection.
+    supports sorting and filter-mode selection.  The per-column arguments,
+    ``matches``, and ``logic`` are deprecated in favour of ``where``, which
+    is added when *where_type* is given.
 
     :param cols: List of column descriptor dicts from ``schema_settings``.
+    :param where_type: Optional ``<Entity>Filter`` type for ``where``.
     :returns:    Dict mapping argument names to Graphene field instances,
                  ready to be unpacked into ``MyConnectionField(...)``.
     """
@@ -579,17 +922,24 @@ def _make_gql_query_fields(cols):
             and row['ishidden'] is False
             and row['isresolver'] is False
         ):
-            extra_kwargs = {}
-            if row.get('deprecation_reason'):
-                extra_kwargs['deprecation_reason'] = row['deprecation_reason']
+            # A schema.dct deprecation_reason takes precedence over the
+            # generic pointer to where.
+            extra_kwargs = {
+                'deprecation_reason': row.get('deprecation_reason') or _LEGACY_FILTER_DEPRECATION
+            }
             gql_attrs[row['name']] = row['type'](row['type_args'] if row['type_args'] else None, **extra_kwargs)
     # Append the standard modifier arguments supported by MyConnectionField.
     gql_attrs.update({
-        'matches': graphene.String()
+        'matches': graphene.String(deprecation_reason=_LEGACY_FILTER_DEPRECATION)
         ,'sort_by': graphene.String()
-        ,'logic': graphene.String()
+        ,'logic': graphene.String(deprecation_reason=_LEGACY_FILTER_DEPRECATION)
         ,'sort_dir': graphene.String()
         })
+    if where_type is not None:
+        gql_attrs['where'] = graphene.Argument(
+            where_type,
+            description='Typed filter; see the GraphiQL user guide for operators.',
+        )
     return gql_attrs
     
 class Query(graphene.ObjectType):
@@ -599,8 +949,9 @@ class Query(graphene.ObjectType):
     One :class:`MyConnectionField` is attached per entity defined in the
     schema dictionary.  Each field is a Relay connection that supports
     pagination (``first``, ``last``, ``before``, ``after``), filtering via
-    column-value arguments, and the ``matches`` / ``sort_by`` / ``logic`` /
-    ``sort_dir`` modifiers provided by :class:`MyConnectionField`.
+    ``where`` (or the deprecated column-value arguments with ``matches`` /
+    ``logic``), and the ``sort_by`` / ``sort_dir`` modifiers provided by
+    :class:`MyConnectionField`.
 
     ``node`` is the standard Relay global-ID lookup field required by the
     Relay specification.
@@ -616,7 +967,9 @@ class Query(graphene.ObjectType):
     for clazz in schema_settings.get_gql_classes():
         locals()[clazz['gql_conn_query_name']] = MyConnectionField(
             globals()[clazz['gql_class']]
-            ,_make_gql_query_fields(clazz['gql_columns'])
+            ,_make_gql_query_fields(
+                clazz['gql_columns'], _WHERE_FILTER_TYPES[clazz['gql_class']]
+            )
             )
 
 # Compile the final GraphQL schema from the Query root type.

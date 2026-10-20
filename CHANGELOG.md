@@ -2,6 +2,57 @@
 
 All notable changes to Grapinator
 
+## [2.2.0] - 2026-10-16
+
+### Added
+
+- **Typed `where` filter on every entity connection** (issue #43, design in
+  #44) — `where: <Entity>Filter` takes one `<Scalar>Filter` per filterable
+  column (`StringFilter`, `IntFilter`, `FloatFilter`, `DateTimeFilter`, ...)
+  with the operators `eq`, `ne`, `in`, `notIn`, `gt`, `gte`, `lt`, `lte`,
+  `contains`, `startsWith`, `endsWith` (strings, case-insensitive with LIKE
+  wildcards escaped), and `isNull`, combined with nestable `and` / `or` /
+  `not`. Explicit `null` operands are rejected in favour of `isNull`. Filters
+  are limited to 8 levels of nesting and 100 conditions, and every rejection
+  happens before SQL runs. Columns restricted by `gql_auth_roles` appear in
+  `<Entity>Filter` only for matching roles; for other callers they produce
+  the same error as nonexistent columns, without suggestions. Entity and row
+  policies still apply to every `where` shape. `where` has no regex operator.
+- **`[GRAPHENE] MAX_PAGE_SIZE`** — Optional, unset by default. When set,
+  `first` / `last` values above the limit are clamped to it and requests with
+  neither get `first = MAX_PAGE_SIZE`; no error is returned, so clients must
+  follow `pageInfo` and cursors. v2.1.14 removed an earlier page-size setting
+  that rejected requests; this one is opt-in and clamps.
+- **`[GRAPHENE] MAX_IN_LIST_SIZE`** — Maximum values in a `where` `in` /
+  `notIn` list (default 500). Values above 1000 (Oracle's ORA-01795 limit),
+  zero, negative, or non-integer values fail at startup, as do invalid
+  `MAX_PAGE_SIZE` values.
+
+### Deprecated
+
+- **Per-column filter arguments, `matches`, and `logic`** — They behave
+  exactly as before but now carry `deprecationReason: "Use the where argument
+  instead."` (a `gql_deprecation_reason` in the schema dictionary still takes
+  precedence). `sort_by`, `sort_dir`, and Relay pagination arguments are not
+  deprecated. Use of the deprecated filter arguments is logged at INFO with
+  the entity and the token `sub` claim, to measure remaining usage before a
+  future major release removes them.
+
+### Migration notes
+
+- Supplying both forms filters with `(legacy conditions joined by logic) AND
+  (where conditions)`; `logic` never applies to `where`.
+- Introspection omits deprecated arguments unless the client requests
+  `args(includeDeprecated: true)`. GraphiQL already requests them; other
+  tooling that lists connection arguments may need the flag.
+- See the migration table in `docs/graphiql_user_guide.md`. Note that
+  `where` string operators treat `%` and `_` literally, while the legacy
+  `contains` / `startswith` / `endswith` modes still treat them as wildcards.
+- Legacy `column: null` arguments were and remain ignored; use
+  `where: {column: {isNull: true}}` to match NULLs.
+
+---
+
 ## [2.1.14] - 2026-10-06
 
 ### Security
