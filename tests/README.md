@@ -43,6 +43,30 @@ Coverage includes:
 | Relay pagination | Optional/default caps, first/last boundaries, zero/null sizes, forward/backward cursors, filtering/sorting interactions, empty connections, input immutability |
 | Settings | Independent defaults, positive-integer validation, whitespace, Oracle's 1000-item boundary, configuration-instance isolation |
 
+### Security Requirement Checklist (Issue #46)
+
+Each security-relevant feature, the test class that covers it, and one case
+that must be allowed and one that must be rejected. A feature without both
+columns filled is a coverage gap.
+
+| Feature | Test class | Must allow | Must reject |
+| --- | --- | --- | --- |
+| Bearer auth, `off` mode | `test_bearer_auth.TestBearerAuthMiddlewareOffMode` | `test_passes_request_with_invalid_token` | `test_sets_authenticated_false_in_environ` (never marks a caller authenticated) |
+| Bearer auth, `mixed` mode | `test_bearer_auth.TestBearerAuthMiddlewareMixedMode` | `test_no_token_passes_through` | `test_invalid_token_returns_401`, `test_expired_token_returns_401` |
+| Bearer auth, `required` mode | `test_bearer_auth.TestBearerAuthMiddlewareRequiredMode` | `test_valid_token_passes_through` | `test_no_token_returns_401` |
+| JWT algorithms | `test_security.TestJwtNoneAlgorithmBlocked` | `test_valid_hs256_token_still_accepted` | `test_none_algorithm_token_rejected_returns_401` |
+| JWKS (production key lookup) | `test_bearer_auth.TestBearerAuthMiddlewareJwks` | `test_token_signed_with_jwks_key_is_accepted` | `test_token_signed_with_other_key_is_rejected`, `test_wrong_issuer_is_rejected`, `test_wrong_audience_is_rejected`, `test_expired_token_is_rejected` |
+| GraphiQL access | `test_bearer_auth.TestGraphiqlAccessControl` | `test_graphiql_open_bypasses_auth_for_ide_get` | `test_get_with_query_param_is_not_ide_request` |
+| Entity roles | `test_bearer_auth.TestEntityLevelRBAC` | `test_entity_with_matching_role_runs_query_normally` | `test_entity_with_missing_role_returns_empty_queryset` |
+| Field roles (schema) | `test_bearer_auth.TestRoleSpecificGraphQLSchema` | `test_only_matching_role_sees_protected_output_and_filter_argument` | `test_protected_field_selection_is_validation_error_without_role` |
+| Field roles (resolver) | `test_bearer_auth.TestRoleFieldResolver` | `test_matching_role_returns_attribute_value` | `test_nonmatching_role_returns_none` |
+| Row policies | `test_security.TestRequestScopedOrmPolicies` | `test_row_policy_scopes_direct_queries` | `test_missing_row_claim_fails_closed` |
+| Policy configuration | `test_security.TestRegisterModelPolicyValidation` | `test_valid_policy_registers` | `test_string_roles_rejected`, `test_unmapped_or_non_column_attribute_rejected` |
+| `where` RBAC | `test_where_filter.TestWhereRbac` | `test_hr_role_can_filter_on_protected_column` | `test_protected_and_unknown_columns_are_indistinguishable` |
+| `where` cannot widen policies | `test_where_filter.TestWhereCannotWidenPolicies` | `test_row_policy_applies_inside_or_and_not` (only permitted rows) | `test_entity_roles_still_deny` |
+| Sort RBAC | `test_connection_field.TestSorting`, `test_security.TestSortByValidation` | `test_matching_role_can_filter_and_sort_protected_column`, `test_valid_sort_column_accepted` | `test_protected_sort_is_ignored_without_matching_role`, `test_private_attribute_rejected` |
+| Error masking | `test_flask_app.TestGraphQLErrorMasking` | `test_client_errors_keep_their_safe_message` | `test_database_errors_are_masked_at_http_boundary` |
+
 For optional line and branch coverage, install the `coverage` development tool
 and run:
 

@@ -570,6 +570,12 @@ class TestWhereSchema(unittest.TestCase):
             with self.subTest(entity=entity['gql_class']):
                 filter_type = schema.get_type(entity['gql_class'] + 'Filter')
                 self.assertIsNotNone(filter_type)
+                expected_fields = {
+                    column['name'] for column in entity['gql_columns']
+                    if column['isqueryable'] and not column['ishidden']
+                    and not column['isresolver']
+                } | {'and', 'or', 'not'}
+                self.assertEqual(set(filter_type.fields), expected_fields)
                 field = schema.query_type.fields[entity['gql_conn_query_name']]
                 self.assertIs(field.args['where'].type, filter_type)
                 self.assertIs(filter_type.fields['not'].type, filter_type)

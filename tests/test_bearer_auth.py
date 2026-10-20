@@ -534,6 +534,141 @@ class TestBearerAuthMiddlewareRSA(unittest.TestCase):
 
 
 # ===========================================================================
+# BearerAuthMiddleware — production JWKS path (PyJWKClient mocked)
+# ===========================================================================
+
+JWKS_URI = 'https://idp.example.test/realms/test/protocol/openid-connect/certs'
+JWKS_ISSUER = 'https://idp.example.test/realms/test'
+JWKS_AUDIENCE = 'grapinator-api'
+
+
+def _make_jwks_token(private_key, issuer=JWKS_ISSUER, audience=JWKS_AUDIENCE,
+                     exp_offset=3600, roles=None):
+    """Return an RS256 JWT carrying the issuer/audience a JWKS deployment checks."""
+    now = int(time.time())
+    payload = {
+        'sub': 'test-user', 'iat': now, 'exp': now + exp_offset,
+        'iss': issuer, 'aud': audience,
+    }
+    if roles is not None:
+        payload['roles'] = roles
+    return pyjwt.encode(payload, private_key, algorithm='RS256',
+                        headers={'kid': 'test-kid'})
+
+
+class TestBearerAuthMiddlewareJwks(unittest.TestCase):
+    """
+    Exercise the PyJWKClient construction and key-lookup path that production
+    IdPs (Keycloak, Entra ID) use.  Only the network boundary,
+    ``jwt.PyJWKClient``, is mocked; ``jwt.decode`` runs for real against the
+    key the mocked JWKS returns.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.private_key, cls.public_key = _make_rsa_key_pair()
+        cls.other_private_key, _ = _make_rsa_key_pair()
+
+    def _settings(self, cache_ttl=600, dev_secret=None):
+        settings = _make_auth_settings(
+            mode='required', dev_secret=dev_secret, jwks_uri=JWKS_URI,
+            issuer=JWKS_ISSUER, audience=JWKS_AUDIENCE,
+        )
+        settings.AUTH_ALGORITHMS = 'RS256'
+        settings.AUTH_JWKS_CACHE_TTL = cache_ttl
+        return settings
+
+    def _build(self, settings=None):
+        """Build middleware with PyJWKClient replaced; return (middleware, client_cls)."""
+        self.inner, self.captured = _capturing_wsgi_app()
+        patcher = patch('jwt.PyJWKClient')
+        client_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        client_cls.return_value.get_signing_key_from_jwt.return_value = (
+            MagicMock(key=self.public_key)
+        )
+        middleware = BearerAuthMiddleware(self.inner, settings or self._settings())
+        return middleware, client_cls
+
+    def _call(self, middleware, token):
+        statuses = []
+        body = b''.join(middleware(
+            _make_environ(auth_header=f'Bearer {token}'),
+            lambda s, h, ei=None: statuses.append(s),
+        ))
+        return statuses[0], body
+
+    def _error_message(self, body):
+        return json.loads(body)['errors'][0]['message']
+
+    def test_jwks_uri_configures_client_with_cache_ttl(self):
+        middleware, client_cls = self._build(self._settings(cache_ttl=600))
+        client_cls.assert_called_once_with(JWKS_URI, cache_jwk_set=True, lifespan=600)
+        self.assertIs(middleware._jwks_client, client_cls.return_value)
+
+    def test_token_signed_with_jwks_key_is_accepted(self):
+        middleware, client_cls = self._build()
+        token = _make_jwks_token(self.private_key, roles=['analyst'])
+        status, _ = self._call(middleware, token)
+        self.assertEqual(status, '200 OK')
+        client_cls.return_value.get_signing_key_from_jwt.assert_called_once_with(token)
+        self.assertEqual(self.captured['grapinator.user_roles'], ['analyst'])
+        self.assertIs(self.captured['grapinator.authenticated'], True)
+
+    def test_token_signed_with_other_key_is_rejected(self):
+        middleware, _ = self._build()
+        status, body = self._call(middleware, _make_jwks_token(self.other_private_key))
+        self.assertEqual(status, '401 Unauthorized')
+        self.assertEqual(self._error_message(body), 'Invalid token.')
+        self.assertNotIn('grapinator.authenticated', self.captured)
+
+    def test_wrong_issuer_is_rejected(self):
+        middleware, _ = self._build()
+        token = _make_jwks_token(self.private_key, issuer='https://evil.example.test')
+        status, body = self._call(middleware, token)
+        self.assertEqual(status, '401 Unauthorized')
+        self.assertEqual(self._error_message(body), 'Invalid token issuer.')
+
+    def test_wrong_audience_is_rejected(self):
+        middleware, _ = self._build()
+        token = _make_jwks_token(self.private_key, audience='another-api')
+        status, body = self._call(middleware, token)
+        self.assertEqual(status, '401 Unauthorized')
+        self.assertEqual(self._error_message(body), 'Invalid token audience.')
+
+    def test_expired_token_is_rejected(self):
+        middleware, _ = self._build()
+        token = _make_jwks_token(self.private_key, exp_offset=-60)
+        status, body = self._call(middleware, token)
+        self.assertEqual(status, '401 Unauthorized')
+        self.assertEqual(self._error_message(body), 'Token has expired.')
+
+    def test_key_lookup_failure_is_rejected(self):
+        """A kid missing from the JWKS (PyJWKClientError) yields 401, not 500."""
+        middleware, client_cls = self._build()
+        client_cls.return_value.get_signing_key_from_jwt.side_effect = (
+            pyjwt.PyJWKClientError('Unable to find a signing key that matches')
+        )
+        status, body = self._call(middleware, _make_jwks_token(self.private_key))
+        self.assertEqual(status, '401 Unauthorized')
+        self.assertEqual(self._error_message(body), 'Invalid token.')
+
+    def test_client_init_failure_logs_warning_and_does_not_crash(self):
+        inner, _ = _capturing_wsgi_app()
+        with patch('jwt.PyJWKClient', side_effect=RuntimeError('bad jwks uri')):
+            with self.assertLogs('grapinator.auth', level='WARNING') as logs:
+                middleware = BearerAuthMiddleware(inner, self._settings())
+        self.assertIsNone(middleware._jwks_client)
+        self.assertTrue(any(
+            record.levelname == 'WARNING'
+            and 'could not initialise PyJWKClient: bad jwks uri' in record.getMessage()
+            for record in logs.records
+        ))
+        status, _ = self._call(middleware, _make_jwks_token(self.private_key))
+        self.assertEqual(status, '401 Unauthorized')
+
+
+# ===========================================================================
 # Schema RBAC — field-level schema hiding
 # ===========================================================================
 
@@ -670,6 +805,95 @@ class TestRoleSpecificGraphQLSchema(unittest.TestCase):
         self.assertEqual(validate(hr_schema, document), [])
         errors = validate(anonymous_schema, document)
         self.assertTrue(any('birth_date' in error.message for error in errors))
+
+
+# ===========================================================================
+# Schema RBAC — field-level resolver guard (_make_role_field_resolver)
+# ===========================================================================
+
+class TestRoleFieldResolver(unittest.TestCase):
+    """
+    The resolver wrapper is the runtime check behind schema hiding: it returns
+    ``None`` for a protected field unless the caller holds a required role.
+    """
+
+    def setUp(self):
+        from grapinator.schema import _make_role_field_resolver
+        self.make_resolver = _make_role_field_resolver
+        self.root = MagicMock(secret_salary=91000.0)
+
+    def _info(self, context):
+        info = MagicMock()
+        info.context = context
+        return info
+
+    def test_no_roles_returns_none(self):
+        resolve = self.make_resolver('secret_salary', ['hr'])
+        self.assertIsNone(resolve(self.root, self._info({'user_roles': []})))
+        self.assertIsNone(resolve(self.root, self._info({})))
+        self.assertIsNone(resolve(self.root, self._info(None)))
+
+    def test_nonmatching_role_returns_none(self):
+        resolve = self.make_resolver('secret_salary', ['hr'])
+        self.assertIsNone(resolve(self.root, self._info({'user_roles': ['reader']})))
+
+    def test_matching_role_returns_attribute_value(self):
+        resolve = self.make_resolver('secret_salary', ['hr', 'payroll'])
+        info = self._info({'user_roles': ['reader', 'payroll']})
+        self.assertEqual(resolve(self.root, info), 91000.0)
+
+    def test_matching_role_delegates_to_custom_resolver(self):
+        custom = MagicMock(return_value=42)
+        resolve = self.make_resolver('calculated_secret', ['hr'], custom)
+        info = self._info({'user_roles': ['hr']})
+        self.assertEqual(resolve(self.root, info, scale=2), 42)
+        custom.assert_called_once_with(self.root, info, scale=2)
+
+    def test_nonmatching_role_never_calls_custom_resolver(self):
+        custom = MagicMock(return_value=42)
+        resolve = self.make_resolver('calculated_secret', ['hr'], custom)
+        self.assertIsNone(resolve(self.root, self._info({'user_roles': ['reader']})))
+        custom.assert_not_called()
+
+    def test_non_dict_context_returns_none(self):
+        resolve = self.make_resolver('secret_salary', ['hr'])
+        # An object exposing user_roles as an attribute is still not a dict.
+        context = MagicMock(user_roles=['hr'])
+        self.assertIsNone(resolve(self.root, self._info(context)))
+        self.assertIsNone(resolve(self.root, self._info(['hr'])))
+
+    def test_constructor_installs_role_resolvers_on_protected_fields(self):
+        """gql_class_constructor wires the guard for column and resolver fields."""
+        import graphene
+        import grapinator.schema as schema_module
+
+        base = {
+            'desc': None, 'type_args': None, 'isqueryable': True,
+            'ishidden': False, 'deprecation_reason': None,
+        }
+        custom = MagicMock(return_value=7)
+        attrs = [
+            dict(base, name='public_name', type=graphene.String,
+                 isresolver=False, auth_roles=None),
+            dict(base, name='secret_salary', type=graphene.Float,
+                 isresolver=False, auth_roles=['hr']),
+            dict(base, name='calculated_secret', type=graphene.Int,
+                 isresolver=True, resolver_func=custom, auth_roles=['hr']),
+        ]
+        with patch.dict(schema_module._FIELD_AUTH_ROLES):
+            gql_type = schema_module.gql_class_constructor(
+                'TestRoleResolverWiring', 'db_Employees', attrs, 'employee_id'
+            )
+        self.assertNotIn('resolve_public_name', vars(gql_type))
+        resolve_salary = gql_type.resolve_secret_salary
+        resolve_calculated = gql_type.resolve_calculated_secret
+        hr, reader = self._info({'user_roles': ['hr']}), self._info({'user_roles': ['reader']})
+
+        self.assertEqual(resolve_salary(self.root, hr), 91000.0)
+        self.assertIsNone(resolve_salary(self.root, reader))
+        self.assertEqual(resolve_calculated(self.root, hr), 7)
+        self.assertIsNone(resolve_calculated(self.root, reader))
+        custom.assert_called_once_with(self.root, hr)
 
 
 # ===========================================================================
