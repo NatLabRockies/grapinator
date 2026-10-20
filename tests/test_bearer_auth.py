@@ -31,6 +31,7 @@ os.environ.setdefault('GQLAPI_CRYPT_KEY', 'testkey')
 
 import time
 import json
+import logging
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -654,18 +655,63 @@ class TestBearerAuthMiddlewareJwks(unittest.TestCase):
         self.assertEqual(self._error_message(body), 'Invalid token.')
 
     def test_client_init_failure_logs_warning_and_does_not_crash(self):
+        """A JWKS client that cannot be built is logged and fails startup.
+
+        The name is kept from before the fail-closed fix (GHSA-fqfc-cjc9-3ww9):
+        the failure no longer crashes the process with an unhandled error from
+        PyJWT, but it no longer lets startup continue either.
+        """
         inner, _ = _capturing_wsgi_app()
         with patch('jwt.PyJWKClient', side_effect=RuntimeError('bad jwks uri')):
             with self.assertLogs('grapinator.auth', level='WARNING') as logs:
-                middleware = BearerAuthMiddleware(inner, self._settings())
-        self.assertIsNone(middleware._jwks_client)
+                with self.assertRaisesRegex(
+                    RuntimeError, 'Could not initialise the JWKS client.*bad jwks uri'
+                ):
+                    BearerAuthMiddleware(inner, self._settings())
         self.assertTrue(any(
-            record.levelname == 'WARNING'
+            record.levelno >= logging.WARNING
             and 'could not initialise PyJWKClient: bad jwks uri' in record.getMessage()
             for record in logs.records
         ))
-        status, _ = self._call(middleware, _make_jwks_token(self.private_key))
-        self.assertEqual(status, '401 Unauthorized')
+
+    def test_dev_secret_not_used_when_jwks_client_init_fails(self):
+        """Regression for GHSA-fqfc-cjc9-3ww9.
+
+        When AUTH_JWKS_URI is set and PyJWKClient cannot be built (here
+        AUTH_JWKS_CACHE_TTL = 0, which PyJWKClient rejects), the middleware
+        used to log a warning and validate tokens with AUTH_DEV_SECRET, so a
+        token forged with the dev secret was accepted with any roles.
+        """
+        inner, captured = _capturing_wsgi_app()
+        settings = self._settings(cache_ttl=0, dev_secret=DEV_SECRET)
+        with self.assertLogs('grapinator.auth', level='WARNING'):
+            with self.assertRaises(RuntimeError):
+                BearerAuthMiddleware(inner, settings)
+        self.assertNotIn('grapinator.user_roles', captured)
+
+    def test_dev_secret_token_rejected_when_jwks_uri_set(self):
+        """With AUTH_JWKS_URI set, a dev-secret HS256 token is never accepted,
+        including when no JWKS client is available at request time."""
+        settings = self._settings(dev_secret=DEV_SECRET)
+        settings.AUTH_ALGORITHMS = 'RS256,HS256'
+        middleware, _ = self._build(settings)
+        forged = _make_token(roles=['admin'], extra_claims={
+            'iss': JWKS_ISSUER, 'aud': JWKS_AUDIENCE,
+        })
+        for client in (middleware._jwks_client, None):
+            with self.subTest(jwks_client=client):
+                middleware._jwks_client = client
+                status, _ = self._call(middleware, forged)
+                self.assertEqual(status, '401 Unauthorized')
+                self.assertNotIn('grapinator.user_roles', self.captured)
+
+    def test_dev_secret_with_jwks_uri_logs_that_it_is_ignored(self):
+        with self.assertLogs('grapinator.auth', level='WARNING') as logs:
+            self._build(self._settings(dev_secret=DEV_SECRET))
+        self.assertEqual(
+            [r.getMessage() for r in logs.records if r.levelno == logging.WARNING],
+            ['BearerAuthMiddleware: AUTH_DEV_SECRET is ignored because AUTH_JWKS_URI is set'],
+        )
 
 
 # ===========================================================================
