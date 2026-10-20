@@ -466,6 +466,12 @@ class TestGraphQLSchemaIntrospection(unittest.TestCase):
             role_schema = schema_module.get_schema_for_roles(roles)
             self.assertEqual(validate_schema(role_schema), [])
             self.assertIsNotNone(role_schema.get_type('Employees').graphene_type)
+            # The clone must keep the original Graphene class, which resolvers
+            # and Relay node lookups rely on.
+            self.assertIs(
+                role_schema.get_type('Employees').graphene_type,
+                schema_module.Employees,
+            )
 
     def test_invalid_relay_node_ids_return_null_without_errors(self):
         invalid_ids = (

@@ -398,6 +398,11 @@ class TestPackageLogging(unittest.TestCase):
         """Schema entity count logged at startup is > 0."""
         from grapinator import schema_settings
         self.assertGreater(len(schema_settings.get_gql_classes()), 0)
+        # One GraphQL class per entity in the schema dictionary file.
+        self.assertEqual(
+            [c['gql_class'] for c in schema_settings.get_gql_classes()],
+            [row['GQL_CLASS_NAME'] for row in schema_settings._schema_dict],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +450,11 @@ class TestLogLevelContract(unittest.TestCase):
             BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_DEV_SECRET=DEV_SECRET))
         warning_records = [r for r in cm.records if r.levelno == logging.WARNING]
         self.assertGreater(len(warning_records), 0)
+        self.assertEqual(
+            [r.getMessage() for r in warning_records],
+            ['BearerAuthMiddleware: using AUTH_DEV_SECRET (HS256) — '
+             'local dev only, not for production'],
+        )
 
     def test_info_level_for_init_summary(self):
         """Init summary is emitted at INFO, not DEBUG."""
@@ -452,6 +462,11 @@ class TestLogLevelContract(unittest.TestCase):
             BearerAuthMiddleware(_downstream(), _mock_settings(AUTH_DEV_SECRET=None))
         info_records = [r for r in cm.records if r.levelno == logging.INFO]
         self.assertGreater(len(info_records), 0)
+        self.assertEqual(
+            [r.getMessage() for r in info_records],
+            ["BearerAuthMiddleware: mode=mixed algorithms=['HS256'] "
+             "graphiql_access=authenticated"],
+        )
 
     def test_debug_level_for_valid_request(self):
         """Successful auth decision is logged at DEBUG (not INFO or WARNING)."""
@@ -461,6 +476,10 @@ class TestLogLevelContract(unittest.TestCase):
             mw(_make_environ(token=token), MagicMock())
         debug_records = [r for r in cm.records if r.levelno == logging.DEBUG]
         self.assertGreater(len(debug_records), 0)
+        self.assertEqual(
+            [r.getMessage() for r in cm.records],
+            ["Auth: token valid, roles=['reader']"],
+        )
 
 
 if __name__ == '__main__':
